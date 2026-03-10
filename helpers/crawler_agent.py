@@ -90,13 +90,13 @@ def clean_up_jina_markdown(content):
 ###############################################################
 # Helper 3: Check if URL has text or is image, excluded, etc. #
 ###############################################################
-def is_content_url(url, excluded_urls, gsfs_base_url, allowed_gsfs_urls):
+def is_content_url(url, excluded_urls, allowed_url_host_to_category, gsfs_base_url, allowed_gsfs_urls):
     from urllib.parse import urlparse
 
     parsed_url = urlparse(url)
     if url in excluded_urls:
         return False
-    if "upm.es" not in parsed_url.netloc:
+    if parsed_url.netloc not in allowed_url_host_to_category:
         return False
     if "/en/" in url:
         return False
@@ -110,7 +110,7 @@ def is_content_url(url, excluded_urls, gsfs_base_url, allowed_gsfs_urls):
 #############################################
 # Helper 4: Extract URLs from (URL) content #
 #############################################
-def extract_urls(content, excluded_urls, gsfs_base_url, allowed_gsfs_urls):
+def extract_urls(content, excluded_urls, allowed_url_host_to_category, gsfs_base_url, allowed_gsfs_urls):
     import re
     from urllib.parse import urldefrag
 
@@ -119,8 +119,9 @@ def extract_urls(content, excluded_urls, gsfs_base_url, allowed_gsfs_urls):
     
     url_pattern = re.compile(r'https?://[^\s()<>"\'\[\]]+')
     urls = set(url_pattern.findall(content))
-    return {urldefrag(u)[0] for u in urls if is_content_url(urldefrag(u)[0], 
+    return {urldefrag(u)[0] for u in urls if is_content_url(urldefrag(u)[0],
                                                             excluded_urls,
+                                                            allowed_url_host_to_category,
                                                             gsfs_base_url,
                                                             allowed_gsfs_urls)}
 
@@ -138,9 +139,18 @@ def remove_es_from_path(url):
     normalized = parsed._replace(path=path)
     return urlunparse(normalized)
 
-#############################################
-# Helper 6: Extract URLs from (URL) content #
-#############################################
+#########################################################
+# Helper 6: Get URL category from host or fallback type #
+#########################################################
+def get_url_category(url, allowed_url_host_to_category, fallback_category=None):
+    from urllib.parse import urlparse
+
+    host = urlparse(url).netloc
+    return allowed_url_host_to_category.get(host, fallback_category)
+
+############################################
+# Helper 7: Crawl URLs and collect content #
+############################################
 def crawl(
         start_url,
         additional_urls,
@@ -148,13 +158,17 @@ def crawl(
         max_links_per_page,
         timeout,
         excluded_urls,
+        links_only_urls,
+        allowed_url_host_to_category,
         gsfs_base_url,
-        allowed_gsfs_urls
+        allowed_gsfs_urls,
+        return_url_to_depth=False
         ):
     import time
     import random
 
     url_content_dict = {}
+    url_to_depth = {}
     visited_urls = set()
     normalized_visited_urls = set()
     to_visit_urls = {start_url}
@@ -164,7 +178,7 @@ def crawl(
         print(f"crawl: depth {depth + 1} -> {len(to_visit_urls)} URLs to visit")
         next_level_urls = set()
 
-        for url in to_visit_urls:
+        for url in sorted(to_visit_urls):
             # skip URL if visited
             if url in visited_urls:
                 continue
@@ -178,26 +192,33 @@ def crawl(
             # add URL to visited
             visited_urls.add(url)
             normalized_visited_urls.add(normalized_url)
+            url_to_depth[url] = depth + 1
 
             # fetch URL content
             print(f"crawl: fetching from: {url}")
             content = fetch_with_jina(url, timeout)
 
             if content:
-                manually_cleaned_content = clean_up_jina_markdown(content)
+                if url not in links_only_urls:
+                    manually_cleaned_content = clean_up_jina_markdown(content)
+                    category = get_url_category(url, allowed_url_host_to_category, fallback_category="university")
 
-                # add URL content
-                url_content_dict[url] = {
-                    "raw": {
-                        "text": content
-                    },
-                    "manually_cleaned": {
-                        "text": manually_cleaned_content
+                    # add URL content
+                    url_content_dict[url] = {
+                        "category": category,
+                        "depth": depth + 1,
+                        "raw": {
+                            "text": content
+                        },
+                        "manually_cleaned": {
+                            "text": manually_cleaned_content
+                        }
                     }
-                }
+                else:
+                    print(f"crawl: links-only URL (skip content): {url}")
 
                 # extract URLs from content
-                new_urls = extract_urls(content, excluded_urls, gsfs_base_url, allowed_gsfs_urls)
+                new_urls = extract_urls(content, excluded_urls, allowed_url_host_to_category, gsfs_base_url, allowed_gsfs_urls)
 
                 # add new URLS (up to max depth)
                 links_added = 0
@@ -216,7 +237,7 @@ def crawl(
     # visit additional urls
     if additional_urls:
         print(f"crawl: processing {len(additional_urls)} additional URLs (depth 1)")
-        for url in additional_urls:
+        for url in sorted(additional_urls):
             # skip URL if visited
             if url in visited_urls:
                 continue
@@ -230,26 +251,35 @@ def crawl(
             # add URL to visited
             visited_urls.add(url)
             normalized_visited_urls.add(normalized_url)
+            url_to_depth[url] = 1
 
             # fetch additional URL content
             print(f"crawl: fetching additional URL: {url}")
             content = fetch_with_jina(url, timeout)
 
             if content:
-                manually_cleaned_content = clean_up_jina_markdown(content)
+                if url not in links_only_urls:
+                    manually_cleaned_content = clean_up_jina_markdown(content)
+                    category = get_url_category(url, allowed_url_host_to_category, fallback_category="university")
 
-                # add additional URL content
-                url_content_dict[url] = {
-                    "raw": {
-                        "text": content
-                    },
-                    "manually_cleaned": {
-                        "text": manually_cleaned_content
+                    # add additional URL content
+                    url_content_dict[url] = {
+                        "category": category,
+                        "depth": 1,
+                        "raw": {
+                            "text": content
+                        },
+                        "manually_cleaned": {
+                            "text": manually_cleaned_content
+                        }
                     }
-                }
+                else:
+                    print(f"crawl: links-only additional URL (skip content): {url}")
             
             # give time between requests
             time.sleep(random.uniform(1, 10))
 
     print(f"crawl: crawled {len(url_content_dict)} pages")
+    if return_url_to_depth:
+        return url_content_dict, url_to_depth
     return url_content_dict

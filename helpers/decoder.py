@@ -144,7 +144,7 @@ def extract_lm_cleaned_content(
     return [abstract, summary, cleanedtext, questions, answers]
 
 ##########################
-# Helper 5: Count tokens #
+# Helper 6: Count tokens #
 ##########################
 def count_tokens(tokenizer, text):
     try:
@@ -154,7 +154,7 @@ def count_tokens(tokenizer, text):
         return 0
 
 ################################
-# Helper 6: Truncate to tokens #
+# Helper 7: Truncate to tokens #
 ################################
 def truncate_to_tokens(tokenizer, text, max_tokens):
     try:
