@@ -5,23 +5,25 @@ sys.path.insert(0, project_root)
 
 import os
 import csv
+import json
 from cycler import cycler
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 from helpers.email_agent import transform_env_csv_into_list
 from config.data import (
     DATASET_PATH,
-    TRAIN_SPLIT_PATH,
+    KNOWLEDGE_BASE_MESSAGES_PATH,
     MESSAGES_WITH_THREADS_DATASET_PATH,
     AUTOMATED_OUTBOUND_TEMPLATES,
     PRE_ENROLLMENT_TEMPLATES,
 )
+from config.email_agent import CONTEXT_EMAILS_PER_FOLDER
 from helpers.data import (
     normalize_subject,
     normalize_email_body,
     plot_distribution,
     get_and_print_folder_uri_counts,
-    assign_thread_ids_by_subject_blocks_for_dataset,
+    assign_thread_ids_by_subject_and_participant_overlap_for_dataset,
     save_dataset,
     get_unquoted_text,
     has_template_in_unquoted
@@ -163,7 +165,7 @@ def main():
         #############################################################################################
         # Remove (admission/rejection) template messages (due to being automated outbound messages) #
         #############################################################################################
-        # NOTE: keeping an instance per template for train split / knowledge base
+        # NOTE: keeping an instance per template for knowledge base messages
         print("\n"+"="*50)
         print("Step 5: removing admission/rejection template messages")
         print("="*50)
@@ -191,7 +193,7 @@ def main():
         for matches in range(0, len(normalized_templates) + 1):
             print(f"\t\t{matches} {'template: ' if matches == 1 else 'templates:'} {match_counts[matches]} rows")
 
-        # keep one instance per admission/rejection template for train split
+        # keep one instance per admission/rejection template for knowledge base messages
         for row in pre_enrollment_filtered_rows[1:]:
             normalized_body = normalize_email_body(get_unquoted_text(row[2]))
             for template in normalized_templates:
@@ -200,7 +202,7 @@ def main():
                     collected_templates.add(template)
                     break
         if template_sample_rows[1:]:
-            print(f"\nCollected {len(template_sample_rows) - 1} template samples for train split")
+            print(f"\nCollected {len(template_sample_rows) - 1} template samples for knowledge base messages")
 
         # filter out rows with admission / rejection to MUIA messages
         filtered_rows = [pre_enrollment_filtered_rows[0]] # keep header
@@ -248,9 +250,18 @@ def main():
         print("Step 7: grouping emails by thread")
         print("="*50)
 
-        dedup_filtered_rows_with_threads = assign_thread_ids_by_subject_blocks_for_dataset(dedup_filtered_rows)
+        dataset_thread_lookback_window_rows = 2 * CONTEXT_EMAILS_PER_FOLDER
+        dedup_filtered_rows_with_threads = assign_thread_ids_by_subject_and_participant_overlap_for_dataset(
+            dedup_filtered_rows,
+            my_email_addresses,
+            dataset_thread_lookback_window_rows
+        )
         thread_ids = {row[-1] for row in dedup_filtered_rows_with_threads[1:]}
-        print(f"\nThread count: {len(thread_ids)} (rows: {len(dedup_filtered_rows_with_threads) - 1})")
+        print(
+            f"\nThread count: {len(thread_ids)} "
+            f"(rows: {len(dedup_filtered_rows_with_threads) - 1}, "
+            f"lookback window rows: {dataset_thread_lookback_window_rows})"
+        )
 
         # get folderURI counts and show updated distribution
         folder_uri_counts = get_and_print_folder_uri_counts(
@@ -259,17 +270,22 @@ def main():
             previous_counts=previous_folder_uri_counts
         )
 
-        train_sample_rows_with_threads = [template_sample_rows[0][:1] + ["threadID"] + template_sample_rows[0][1:]]
-        negative_thread_id = -1
+        knowledge_base_messages = []
         for row in template_sample_rows[1:]:
-            train_sample_rows_with_threads.append(row[:1] + [negative_thread_id] + row[1:])
-            negative_thread_id -= 1
+            knowledge_base_messages.append({
+                "folder_uri": row[0],
+                "subject": row[1],
+                "body": row[2],
+            })
 
-        #################################################################
-        # Save csv files (one with train samples, another with threads) #
-        #################################################################
+        #######################################################################
+        # Save files (knowledge base messages and messages grouped by thread) #
+        #######################################################################
         print()
-        save_dataset(train_sample_rows_with_threads, TRAIN_SPLIT_PATH)
+        with open(KNOWLEDGE_BASE_MESSAGES_PATH, mode="w", encoding="utf-8") as jsonl_file:
+            for message in knowledge_base_messages:
+                jsonl_file.write(json.dumps(message, ensure_ascii=False) + "\n")
+        print(f"Saved dataset to {KNOWLEDGE_BASE_MESSAGES_PATH}")
         save_dataset(dedup_filtered_rows_with_threads, MESSAGES_WITH_THREADS_DATASET_PATH)
 
         ######################
