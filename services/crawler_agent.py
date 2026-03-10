@@ -1,5 +1,6 @@
-import modal
 from config.general import modal_secret, rag_volume, VOLUME_PATH
+from config.modal_apps import CRAWLER_AGENT_APP_NAME, DECODER_APP_NAME, COLLECTION_HANDLER_APP_NAME
+from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME, CREATE_COLLECTIONS_FUNCTION_NAME
 from config.crawler_agent import (
     image,
     MODAL_TIMEOUT,
@@ -8,9 +9,10 @@ from config.crawler_agent import (
     CRAWL_DAY,
     CRAWL_MONTH
 )
+import modal
 
 # Modal
-app = modal.App("crawler-agent")
+app = modal.App(CRAWLER_AGENT_APP_NAME)
 
 @app.function(
         image=image,
@@ -28,8 +30,9 @@ async def run_crawler_agent():
     import asyncio
     import datetime
     from transformers import AutoTokenizer
-    from helpers.crawler_agent import crawl
+    from helpers.crawler_agent import crawl, get_url_category
     from helpers.decoder import count_tokens
+    from helpers.openai_decoder import run_openai_data_cleaner
     from llama_index.core.node_parser import SentenceSplitter
     from config.decoder import MODEL_PROFILES as DECODER_MODEL_PROFILES, DATA_CLEANER_PROFILE, EMAIL_WRITER_PROFILE
     from config.encoder import ENCODERS
@@ -39,9 +42,12 @@ async def run_crawler_agent():
         MAX_DEPTH,
         MAX_LINKS_PER_PAGE,
         EXCLUDED_URLS,
+        LINKS_ONLY_URLS,
+        ALLOWED_URL_HOST_TO_CATEGORY,
         GSFS_BASE_URL,
         ALLOWED_GSFS_URLS,
         JINA_FETCH_TIMEOUT,
+        CRAWL_PRINT_ONLY,
         CHUNK_OVERLAP,
         REUSE_CRAWL,
         REUSE_CRAWL_PAST_CURRENT_YEAR,
@@ -66,6 +72,8 @@ async def run_crawler_agent():
     # worker function to process single URL
     # https://modal.com/docs/guide/async#async-functions
     async def process_single_url(url, content):
+        category = content.get("category", "university")
+        depth = content.get("depth")
         local_results = {
             "url": url,
             "content": content,
@@ -99,6 +107,8 @@ async def run_crawler_agent():
             for idx, chunk_text in enumerate(raw_text_chunks):
                 local_results["raw_chunks"].append({
                     "url": url,
+                    "category": category,
+                    "depth": depth,
                     "chunk_index": idx,
                     "text": chunk_text,
                     "decoder_token_count": count_tokens(decoder_tokenizer, chunk_text),
@@ -113,6 +123,8 @@ async def run_crawler_agent():
             for idx, chunk_text in enumerate(text_chunks):
                 local_results["manually_cleaned_chunks"].append({
                     "url": url,
+                    "category": category,
+                    "depth": depth,
                     "chunk_index": idx,
                     "text": chunk_text,
                     "decoder_token_count": count_tokens(decoder_tokenizer, chunk_text),
@@ -162,6 +174,8 @@ async def run_crawler_agent():
                 try:
                     prompt = prompt_template.format(
                         datetime=current_date_time,
+                        source_url=url,
+                        source_category=category,
                         page_history_context=history_context,
                         previous_chunk_context=previous_cleaned_text,
                         text=chunk_text
@@ -172,13 +186,28 @@ async def run_crawler_agent():
 
                 # run decoder (without "template" in model_config)
                 try:
-                    lm_cleaned_content, prompt_text = await run_qwen3_lm_or_vlm.remote.aio(
-                        context=[],
-                        current_turn_input_text=prompt,
-                        current_turn_image_in_bytes=None,
-                        **model_config,
-                        decoder_profile=DATA_CLEANER_PROFILE
-                    )
+                    if model_config["provider"] == "openai":
+                        lm_cleaned_content, prompt_text = await asyncio.to_thread(
+                            run_openai_data_cleaner,
+                            current_turn_input_text=prompt,
+                            system_prompt=model_config["system_prompt"],
+                            model_name_or_path=model_config["model_name_or_path"],
+                            max_new_tokens=model_config["max_new_tokens"],
+                            # temperature=model_config["temperature"],
+                            # top_p=model_config["top_p"],
+                            enable_thinking=model_config["enable_thinking"],
+                            reasoning_effort=model_config["reasoning_effort"],
+                            return_prompt_text=model_config["return_prompt_text"],
+                        )
+                    else:
+                        model_config.pop("reasoning_effort", None)
+                        lm_cleaned_content, prompt_text = await run_qwen3_lm_or_vlm.remote.aio(
+                            context=[],
+                            current_turn_input_text=prompt,
+                            current_turn_image_in_bytes=None,
+                            **model_config,
+                            decoder_profile=DATA_CLEANER_PROFILE
+                        )
                 except Exception as e:
                     print(f"run_crawler_agent: decoder generation failed: {e}")
                     continue
@@ -204,6 +233,8 @@ async def run_crawler_agent():
                         abstract_encoder_tokens = count_tokens(encoder_tokenizer, abstract)
                         local_results["lm_abstract_chunks"].append({
                             "url": url,
+                            "category": category,
+                            "depth": depth,
                             "chunk_index": idx,
                             "text": abstract,
                             "decoder_token_count": abstract_decoder_tokens,
@@ -216,6 +247,8 @@ async def run_crawler_agent():
                         summary_encoder_tokens = count_tokens(encoder_tokenizer, summary)
                         local_results["lm_summary_chunks"].append({
                             "url": url,
+                            "category": category,
+                            "depth": depth,
                             "chunk_index": idx,
                             "text": summary,
                             "decoder_token_count": summary_decoder_tokens,
@@ -228,6 +261,8 @@ async def run_crawler_agent():
                         cleaned_text_encoder_tokens = count_tokens(encoder_tokenizer, cleanedtext)
                         local_results["lm_cleaned_text_chunks"].append({
                             "url": url,
+                            "category": category,
+                            "depth": depth,
                             "chunk_index": idx,
                             "text": cleanedtext,
                             "decoder_token_count": cleaned_text_decoder_tokens,
@@ -254,6 +289,8 @@ async def run_crawler_agent():
                             })
                         local_results["lm_q_and_a_chunks"].append({
                             "url": url,
+                            "category": category,
+                            "depth": depth,
                             "chunk_index": idx,
                             "pairs": pairs,
                         })
@@ -274,7 +311,7 @@ async def run_crawler_agent():
         return
     chunking_encoder = min(encoder_sizes, key=encoder_sizes.get)
     encoder_path = ENCODERS[chunking_encoder]["model_name"]
-    decoder_path = DECODER_MODEL_PROFILES[EMAIL_WRITER_PROFILE]["model_path"]
+    decoder_path = DECODER_MODEL_PROFILES[EMAIL_WRITER_PROFILE]["model_name_or_path"]
     encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_path, trust_remote_code=True)
     decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_path, trust_remote_code=True)
 
@@ -338,7 +375,12 @@ async def run_crawler_agent():
             print(f"run_crawler_agent: invalid ENCODE_VARIANTS entry '{variant}'")
             return
 
-    if REUSE_CRAWL:
+    reuse_crawl = REUSE_CRAWL
+    if CRAWL_PRINT_ONLY and reuse_crawl:
+        print("run_crawler_agent: CRAWL_PRINT_ONLY is enabled, forcing REUSE_CRAWL=False")
+        reuse_crawl = False
+
+    if reuse_crawl:
         reuse_timestamp = str(REUSE_TIMESTAMP).strip() if REUSE_TIMESTAMP else ""
 
         # if timestamp set:
@@ -414,22 +456,33 @@ async def run_crawler_agent():
 
         # find decoder service
         try:
-            run_qwen3_lm_or_vlm = modal.Function.from_name("decoder", "run_qwen3_lm_or_vlm")
+            run_qwen3_lm_or_vlm = modal.Function.from_name(DECODER_APP_NAME, RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME)
         except Exception as e:
             print(f"run_crawler_agent: failed to find decoder service. Is it deployed? Error: {e}")
             return
     
         # crawl
-        url_content_dict = crawl(
+        crawl_result = crawl(
             start_url=START_URL,
             additional_urls=ADDITIONAL_URLS,
             max_depth=MAX_DEPTH,
             max_links_per_page=MAX_LINKS_PER_PAGE,
             timeout=JINA_FETCH_TIMEOUT,
             excluded_urls=EXCLUDED_URLS,
+            links_only_urls=LINKS_ONLY_URLS,
+            allowed_url_host_to_category=ALLOWED_URL_HOST_TO_CATEGORY,
             gsfs_base_url=GSFS_BASE_URL,
-            allowed_gsfs_urls=ALLOWED_GSFS_URLS
+            allowed_gsfs_urls=ALLOWED_GSFS_URLS,
+            return_url_to_depth=CRAWL_PRINT_ONLY
         )
+        if CRAWL_PRINT_ONLY:
+            url_content_dict, url_to_depth = crawl_result
+            print("run_crawler_agent:")
+            for url, depth in sorted(url_to_depth.items(), key=lambda item: (item[1], item[0])):
+                category = get_url_category(url, ALLOWED_URL_HOST_TO_CATEGORY, fallback_category="university")
+                print(f"\tdepth {depth} [{category}]: {url}")
+            return
+        url_content_dict = crawl_result
 
         if not url_content_dict:
             print("run_crawler_agent: no content found")
@@ -583,17 +636,19 @@ async def run_crawler_agent():
 
                 for i, (url, data) in enumerate(url_content_dict.items()):
                     separator = "=" * 150
+                    category = data.get("category", "university")
+                    depth = data.get("depth")
 
                     # raw
                     raw_data = data["raw"]
-                    f_raw_json.write(json.dumps({"url": url, "data": raw_data}) + "\n")
-                    header_raw = f"RAW PAGE {i+1}: {url} | Tokens {decoder_path}: {raw_data['decoder_token_count']:,} | Tokens {encoder_path}: {raw_data['encoder_token_count']:,}"
+                    f_raw_json.write(json.dumps({"url": url, "category": category, "depth": depth, "data": raw_data}) + "\n")
+                    header_raw = f"RAW PAGE {i+1}: {url} | Category: {category} | Depth: {depth} | Tokens {decoder_path}: {raw_data['decoder_token_count']:,} | Tokens {encoder_path}: {raw_data['encoder_token_count']:,}"
                     f_raw_txt.write(f"\n{separator}\n{header_raw}\n{separator}\n{raw_data['text']}\n")
 
                     # manually cleaned
                     manually_cleaned_data = data["manually_cleaned"]
-                    f_manually_cleaned_json.write(json.dumps({"url": url, "data": manually_cleaned_data}) + "\n")
-                    header_manually_cleaned = f"MANUALLY CLEANED PAGE {i+1}: {url} | Tokens {decoder_path}: {manually_cleaned_data['decoder_token_count']:,} | Tokens {encoder_path}: {manually_cleaned_data['encoder_token_count']:,}"
+                    f_manually_cleaned_json.write(json.dumps({"url": url, "category": category, "depth": depth, "data": manually_cleaned_data}) + "\n")
+                    header_manually_cleaned = f"MANUALLY CLEANED PAGE {i+1}: {url} | Category: {category} | Depth: {depth} | Tokens {decoder_path}: {manually_cleaned_data['decoder_token_count']:,} | Tokens {encoder_path}: {manually_cleaned_data['encoder_token_count']:,}"
                     f_manually_cleaned_txt.write(f"\n{separator}\n{header_manually_cleaned}\n{separator}\n{manually_cleaned_data['text']}\n")
 
             # save all chunk types
@@ -677,6 +732,8 @@ async def run_crawler_agent():
                 if valid_pairs:
                     valid_chunks.append({
                         "url": chunk["url"],
+                        "category": chunk.get("category", "university"),
+                        "depth": chunk.get("depth"),
                         "chunk_index": chunk["chunk_index"],
                         "pairs": valid_pairs
                     })
@@ -705,6 +762,8 @@ async def run_crawler_agent():
                         items_to_encode += 1
                         prepared_chunks.append({
                             "url": chunk["url"],
+                            "category": chunk.get("category", "university"),
+                            "depth": chunk.get("depth"),
                             "chunk_index": chunk_index,
                             "subchunk_index": split_index + 1,
                             "text": split_text,
@@ -763,45 +822,58 @@ async def run_crawler_agent():
     # create collection
     encoder_functions = {}
     try:
-        create_collections = modal.Function.from_name("collection-handler", "create_collections")
+        create_collections = modal.Function.from_name(COLLECTION_HANDLER_APP_NAME, CREATE_COLLECTIONS_FUNCTION_NAME)
     except Exception as e:
-        print(f"run_crawler_agent: failed to find collection-handler.create_collections. Is it deployed? Error: {e}")
+        print(f"run_crawler_agent: failed to find {COLLECTION_HANDLER_APP_NAME}.{CREATE_COLLECTIONS_FUNCTION_NAME}. Is it deployed? Error: {e}")
         return
     await create_collections.remote.aio(list(variants_to_encode.keys()), RECREATE_QDRANT_COLLECTIONS)
 
+    variant_total_records = {}
     for variant in variants_to_encode.keys():
-        variant_config = ENCODE_VARIANTS[variant]
-        encoder_variant_config = variant_config["encoders"]
         file_path = os.path.join(encode_file_paths[variant], f"{FILE_START}{encode_timestamp}.jsonl")
         if not os.path.exists(file_path):
             print(f"run_crawler_agent: missing encode file '{file_path}'")
             return
         with open(file_path, "r", encoding="utf-8") as f:
-            total_records = sum(1 for _ in f)
-        for encoder_name, encoder_config_for_variant in encoder_variant_config.items():
-            encoder_config = ENCODERS[encoder_name]
-            service_name = encoder_config["service"]
-            function_name = encoder_config["function"]
-            batch_size = encoder_config_for_variant["batch_size"]
-            service_key = (service_name, function_name)
-            if service_key not in encoder_functions:
-                try:
-                    encoder_functions[service_key] = modal.Function.from_name(service_name, function_name)
-                except Exception as e:
-                    print(f"run_crawler_agent: failed to find {service_name}.{function_name}. Is it deployed? Error: {e}")
-                    return
-            run_encoder = encoder_functions[service_key]
-            tasks = [
-                run_encoder.remote.aio(
+            variant_total_records[variant] = sum(1 for line in f if line.strip())
+
+    encoder_to_variant_tasks = {}
+    for variant in variants_to_encode.keys():
+        variant_config = ENCODE_VARIANTS[variant]
+        first_encoder_name = list(variant_config["encoders"].keys())[0]
+        for encoder_name, encoder_config_for_variant in variant_config["encoders"].items():
+            if encoder_name not in encoder_to_variant_tasks:
+                encoder_to_variant_tasks[encoder_name] = []
+            upsert_or_update = "upsert" if encoder_name == first_encoder_name else "update"
+            encoder_to_variant_tasks[encoder_name].append((variant, encoder_config_for_variant["batch_size"], upsert_or_update))
+
+    for encoder_name, variant_tasks in encoder_to_variant_tasks.items():
+        encoder_config = ENCODERS[encoder_name]
+        service_name = encoder_config["service"]
+        function_name = encoder_config["function"]
+        service_key = (service_name, function_name)
+        if service_key not in encoder_functions:
+            try:
+                encoder_functions[service_key] = modal.Function.from_name(service_name, function_name)
+            except Exception as e:
+                print(f"run_crawler_agent: failed to find {service_name}.{function_name}. Is it deployed? Error: {e}")
+                return
+        run_encoder = encoder_functions[service_key]
+
+        async def run_variant_batches(variant, batch_size, upsert_or_update):
+            total_records = variant_total_records[variant]
+            for start in range(0, total_records, batch_size):
+                await run_encoder.remote.aio(
                     variant,
                     encode_timestamp,
                     start,
                     batch_size,
-                    encoder_name
+                    encoder_name,
+                    upsert_or_update
                 )
-                for start in range(0, total_records, batch_size)
-            ]
-            await asyncio.gather(*tasks)
+        for variant, batch_size, upsert_or_update in variant_tasks:
+            await run_variant_batches(variant, batch_size, upsert_or_update)
+            print(f"run_crawler_agent: completed encoder '{encoder_name}' for variant '{variant}'")
 
     print("run_crawler_agent: encoder dispatch complete")
 

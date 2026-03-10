@@ -1,14 +1,16 @@
-import modal
 from config.general import modal_secret
+from config.modal_apps import EMAIL_AGENT_APP_NAME, DECODER_APP_NAME
+from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME
 from config.email_agent import (
     image,
     MODAL_TIMEOUT,
     EMAIL_HOUR,
     EMAIL_MINUTE
 )
+import modal
 
 # Modal
-app = modal.App("email-agent")
+app = modal.App(EMAIL_AGENT_APP_NAME)
 
 @app.function(
         image=image,
@@ -96,7 +98,7 @@ def run_email_agent():
     
     # find decoder service
     try:
-        run_qwen3_lm_or_vlm = modal.Function.from_name("decoder", "run_qwen3_lm_or_vlm")
+        run_qwen3_lm_or_vlm = modal.Function.from_name(DECODER_APP_NAME, RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME)
     except Exception as e:
         print(f"run_email_agent: failed to find decoder service. Is it deployed? Error: {e}")
         return
@@ -191,7 +193,7 @@ def run_email_agent():
     email_writer_profile_config["max_new_tokens"] = max_context_tokens - input_token_budget
 
     # get decoder tokenizer 
-    decoder_path = email_writer_profile_config["model_path"]
+    decoder_path = email_writer_profile_config["model_name_or_path"]
     decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_path, trust_remote_code=True)
 
     # map email id to thread id and thread id to emails
@@ -219,8 +221,10 @@ def run_email_agent():
         # if message is incomplete, skip
         if not original_subject or not original_body or not original_sender:
             print(
-                "run_email_agent: skipping email because missing data "
-                f"(subject={original_subject!r}, body={original_body!r}, sender={original_sender!r})"
+                "run_email_agent: skipping email because missing data:\n"
+                f"\tsubject: {original_subject!r}\n"
+                f"\tbody: {original_body!r}\n"
+                f"\tsender: {original_sender!r}"
             )
             continue
         # if we are the author (message to self), skip

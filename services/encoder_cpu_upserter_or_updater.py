@@ -1,14 +1,15 @@
-import modal
 from config.general import modal_secret, rag_volume, VOLUME_PATH
+from config.modal_apps import ENCODER_CPU_UPSERTER_OR_UPDATER_APP_NAME
 from config.encoder_cpu import (
     image,
     MODAL_TIMEOUT,
     SCALEDOWN_WINDOW,
     MIN_CONTAINERS
 )
+import modal
 
 # Modal
-app = modal.App("encoder-cpu-upserter")
+app = modal.App(ENCODER_CPU_UPSERTER_OR_UPDATER_APP_NAME)
 
 @app.function(
     image=image,
@@ -18,15 +19,16 @@ app = modal.App("encoder-cpu-upserter")
     min_containers=MIN_CONTAINERS,
     volumes={VOLUME_PATH: rag_volume},
 )
-def run_encoder_cpu_upserter(variant, timestamp, start_index, batch_size, encoder):
-    from helpers.encoder import run_encoder_upserter
+def run_encoder_cpu_upserter_or_updater(variant, timestamp, start_index, batch_size, encoder, upsert_or_update="upsert"):
+    from helpers.encoder import run_encoder_upserter_or_updater
 
-    # run upserter on CPU
-    run_encoder_upserter(
+    # run upserter or updater on CPU
+    run_encoder_upserter_or_updater(
         variant=variant,
         timestamp=timestamp,
         start_index=start_index,
         batch_size=batch_size,
         encoder=encoder,
-        worker_name="run_encoder_cpu_upserter",
+        upsert_or_update=upsert_or_update,
+        worker_name="run_encoder_cpu_upserter_or_updater",
     )

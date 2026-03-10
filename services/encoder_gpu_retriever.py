@@ -1,5 +1,5 @@
-import modal
 from config.general import modal_secret, rag_volume, VOLUME_PATH
+from config.modal_apps import ENCODER_GPU_RETRIEVER_APP_NAME
 from config.encoder_gpu import (
     image,
     GPU,
@@ -7,9 +7,10 @@ from config.encoder_gpu import (
     SCALEDOWN_WINDOW,
     MIN_CONTAINERS
 )
+import modal
 
 # Modal
-app = modal.App("encoder-gpu-retriever")
+app = modal.App(ENCODER_GPU_RETRIEVER_APP_NAME)
 
 @app.function(
     image=image,
@@ -20,12 +21,11 @@ app = modal.App("encoder-gpu-retriever")
     min_containers=MIN_CONTAINERS,
     volumes={VOLUME_PATH: rag_volume},
 )
-def run_encoder_gpu_retriever(query_text, variant, encoder_name, top_k):
+def run_encoder_gpu_retriever(query_texts, variant, encoder_name, top_k):
     from helpers.encoder import run_encoder_retriever
 
-    # run retriever on GPU
     return run_encoder_retriever(
-        query_text=query_text,
+        query_texts=query_texts,
         variant=variant,
         encoder_name=encoder_name,
         top_k=top_k,

@@ -1,19 +1,20 @@
-import modal
-
 from config.general import modal_secret
+from config.modal_apps import DECODER_APP_NAME
 from config.decoder import (
     image,
     GPU,
     TIMEOUT,
-    SCALEDOWN_WINDOW,
     MIN_CONTAINERS,
+    SCALEDOWN_WINDOW,
+    DATA_CLEANER_PROFILE,
     EMAIL_WRITER_PROFILE,
     THREAD_GROUPER_PROFILE,
-    DATA_CLEANER_PROFILE
+    QUERY_TRANSLATOR_PROFILE
 )
+import modal
 
 # Modal
-app = modal.App("decoder")
+app = modal.App(DECODER_APP_NAME)
 
 @app.function(
         image=image,
@@ -26,7 +27,8 @@ app = modal.App("decoder")
 def run_qwen3_lm_or_vlm(
     context,
     current_turn_input_text,
-    model_path,
+    provider,
+    model_name_or_path,
     is_vision_model,
     current_turn_image_in_bytes,
     system_prompt,
@@ -44,16 +46,22 @@ def run_qwen3_lm_or_vlm(
     from PIL import Image
     from peft import AutoPeftModelForCausalLM
     from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Qwen3VLForConditionalGeneration
-    from helpers.decoder import remove_think_tokens, extract_message_content, extract_lm_cleaned_content, extract_thread_content
+    from helpers.decoder import (
+        remove_think_tokens,
+        extract_message_content,
+        extract_lm_cleaned_content,
+        extract_thread_content,
+        extract_matched_content
+    )
     from config.decoder import (
-        NO_MESSAGE_OPENING_TAG,
-        NO_MESSAGE_CLOSING_TAG,
         MESSAGE_OPENING_TAG,
         MESSAGE_CLOSING_TAG,
-        ABSTRACT_OPENING_TAG,
-        ABSTRACT_CLOSING_TAG,
+        NO_MESSAGE_OPENING_TAG,
+        NO_MESSAGE_CLOSING_TAG,
         SUMMARY_OPENING_TAG,
         SUMMARY_CLOSING_TAG,
+        ABSTRACT_OPENING_TAG,
+        ABSTRACT_CLOSING_TAG,
         CLEANED_TEXT_OPENING_TAG,
         CLEANED_TEXT_CLOSING_TAG,
         THREAD_OPENING_TAG,
@@ -71,24 +79,26 @@ def run_qwen3_lm_or_vlm(
         QUESTION_OPENING_TAG,
         QUESTION_CLOSING_TAG,
         ANSWER_OPENING_TAG,
-        ANSWER_CLOSING_TAG
+        ANSWER_CLOSING_TAG,
+        TRANSLATION_OPENING_TAG,
+        TRANSLATION_CLOSING_TAG
     )
     
     #######################################
     # Cache model (if not cached already) #
     #######################################
     if (not hasattr(run_qwen3_lm_or_vlm, "model") or
-        getattr(run_qwen3_lm_or_vlm, "model_path", None) != model_path or
+        getattr(run_qwen3_lm_or_vlm, "model_name_or_path", None) != model_name_or_path or
         getattr(run_qwen3_lm_or_vlm, "is_vision_model", None) != is_vision_model):
 
-        print(f"run_qwen3_lm_or_vlm: loading model from {model_path} (is_vision_model: {is_vision_model})...")
+        print(f"run_qwen3_lm_or_vlm: loading model from {model_name_or_path} (is_vision_model: {is_vision_model}, provider: {provider})...")
         
         ##################################################################
         # Model could be LoRA adapter (to load on top of the base model) #
         ##################################################################
         try:
             run_qwen3_lm_or_vlm.model = AutoPeftModelForCausalLM.from_pretrained(
-                model_path,
+                model_name_or_path,
                 dtype="auto",
                 device_map="auto",
                 attn_implementation="sdpa" if not use_flash_attention_2 else "flash_attention_2"
@@ -99,23 +109,23 @@ def run_qwen3_lm_or_vlm(
         except Exception:
             if is_vision_model:
                 run_qwen3_lm_or_vlm.model = Qwen3VLForConditionalGeneration.from_pretrained(
-                    model_path,
+                    model_name_or_path,
                     dtype="auto",
                     device_map="auto",
                     attn_implementation="sdpa" if not use_flash_attention_2 else "flash_attention_2"
                 )
             else:
                 run_qwen3_lm_or_vlm.model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
+                    model_name_or_path,
                     dtype="auto",
                     device_map="auto",
                     attn_implementation="sdpa" if not use_flash_attention_2 else "flash_attention_2"
                 )
         if is_vision_model:
-            run_qwen3_lm_or_vlm.processor = AutoProcessor.from_pretrained(model_path)
+            run_qwen3_lm_or_vlm.processor = AutoProcessor.from_pretrained(model_name_or_path)
         else:
-            run_qwen3_lm_or_vlm.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        run_qwen3_lm_or_vlm.model_path = model_path
+            run_qwen3_lm_or_vlm.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        run_qwen3_lm_or_vlm.model_name_or_path = model_name_or_path
         run_qwen3_lm_or_vlm.is_vision_model = is_vision_model
         
         print("run_qwen3_lm_or_vlm: model and processor loaded and cached")
@@ -281,6 +291,13 @@ def run_qwen3_lm_or_vlm(
             ANSWER_OPENING_TAG,
             ANSWER_CLOSING_TAG
         )
+    elif decoder_profile == QUERY_TRANSLATOR_PROFILE:
+        translations = extract_matched_content(
+            output_text,
+            TRANSLATION_OPENING_TAG,
+            TRANSLATION_CLOSING_TAG
+        )
+        output_text = translations[0] if translations else None
     else:
         print(f"run_qwen3_lm_or_vlm: unknown decoder_profile '{decoder_profile}'")
         output_text = None
