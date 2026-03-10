@@ -1,6 +1,7 @@
-DATASET_PATH = "data/messages.csv"
-TRAIN_SPLIT_PATH = "data/messages_train.csv"
-MESSAGES_WITH_THREADS_DATASET_PATH = "data/messages_with_threads.csv"
+DATASET_PATH = "data/email_messages/messages.csv"
+KNOWLEDGE_BASE_MESSAGES_PATH = "data/knowledge_base_messages/messages_for_knowledge_base.jsonl"
+MESSAGES_WITH_THREADS_DATASET_PATH = "data/email_messages/messages_with_threads.csv"
+SPLIT_DATASETS_DIR = "data/split_datasets"
 UPM_DOMAINS = [
     "upm.es",
     "fi.upm.es",
@@ -22,4 +23,4 @@ REMOVE_INTERNAL_UPM_MESSAGES = True
 TRAIN_SPLIT_PCT = 0.5
 DEV_SPLIT_PCT = 0.25
 VAL_SPLIT_PCT = 0.15
-TEST_SPLIT_PCT = 0.1
+# TEST_SPLIT_PCT = 1 - (TRAIN_SPLIT_PCT + DEV_SPLIT_PCT + VAL_SPLIT_PCT)

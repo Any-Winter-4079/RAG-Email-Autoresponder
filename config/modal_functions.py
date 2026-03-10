@@ -1,0 +1,8 @@
+# need to match function names in services/
+RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME = "run_qwen3_lm_or_vlm"
+CREATE_COLLECTIONS_FUNCTION_NAME = "create_collections"
+DROP_LEGACY_COLLECTIONS_FUNCTION_NAME = "drop_legacy_collections"
+RUN_ENCODER_CPU_UPSERTER_OR_UPDATER_FUNCTION_NAME = "run_encoder_cpu_upserter_or_updater"
+RUN_ENCODER_GPU_UPSERTER_OR_UPDATER_FUNCTION_NAME = "run_encoder_gpu_upserter_or_updater"
+RUN_ENCODER_CPU_RETRIEVER_FUNCTION_NAME = "run_encoder_cpu_retriever"
+RUN_ENCODER_GPU_RETRIEVER_FUNCTION_NAME = "run_encoder_gpu_retriever"

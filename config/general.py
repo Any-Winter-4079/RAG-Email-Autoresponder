@@ -11,10 +11,10 @@ QDRANT_PATH = f"{VOLUME_PATH}/qdrant"
 rag_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
 LEGACY_COLLECTIONS = [
-    "raw_chunks_bm25",
-    "manually_cleaned_chunks_bm25",
-    "lm_cleaned_text_chunks_bm25",
-    "lm_summary_chunks_bm25",
-    "lm_q_and_a_chunks_bm25",
-    "lm_q_and_a_for_q_only_chunks_bm25",
+    "raw_chunks",
+    "manually_cleaned_chunks",
+    "lm_cleaned_text_chunks",
+    "lm_summary_chunks",
+    "lm_q_and_a_chunks",
+    "lm_q_and_a_for_q_only_chunks",
 ]

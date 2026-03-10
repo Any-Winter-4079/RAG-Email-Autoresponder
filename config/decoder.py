@@ -1,4 +1,5 @@
 import modal
+from config.crawler_agent import ALLOWED_URL_HOST_TO_CATEGORY
 
 COMMON_PACKAGES = [
     "torchvision",
@@ -35,6 +36,8 @@ SUMMARY_CLOSING_TAG = "</summary>"
 
 CLEANED_TEXT_OPENING_TAG = "<cleanedtext>"
 CLEANED_TEXT_CLOSING_TAG = "</cleanedtext>"
+TRANSLATION_OPENING_TAG = "<translation>"
+TRANSLATION_CLOSING_TAG = "</translation>"
 
 QUESTIONS_OPENING_TAG = "<questions>"
 QUESTIONS_CLOSING_TAG = "</questions>"
@@ -42,6 +45,27 @@ QUESTION_OPENING_TAG = "<question>"
 QUESTION_CLOSING_TAG = "</question>"
 ANSWER_OPENING_TAG = "<answer>"
 ANSWER_CLOSING_TAG = "</answer>"
+Q_AND_A_MAX_PAIRS = 20
+NON_MUIA_TITULOS_PROPIOS = [
+    "Máster en Fundamentos y Aplicaciones de la Inteligencia Artificial",
+    "Máster en Gestión del Aseguramiento, Protección y Defensa del Software, Operaciones y Sistemas",
+    "Máster en Agile Coaching y Transformación Agile",
+    "Máster en dirección y gestión de proyectos software (a distancia)",
+    "Máster en Consultoría en Gestión de Empresas",
+]
+NON_MUIA_OFFICIAL_MASTERS = [
+    "Máster Universitario en Ingeniería Informática",
+    "Máster Universitario en Innovación Digital",
+    "Máster Universitario en Ingeniería del Software - European Master in Software Engineering",
+    "Máster Universitario en Ciencia de Datos",
+    "Máster Universitario en Software y Sistemas",
+    "Máster Interuniversitario en Métodos Formales en Ingeniería Informática (UPM, UCM, UAM)",
+]
+SOURCE_HOST_CATEGORY_TEXT = ", ".join(
+    [f"{host}: {category}" for host, category in ALLOWED_URL_HOST_TO_CATEGORY.items()]
+)
+SOURCE_HOST_CATEGORY_COUNT = len(ALLOWED_URL_HOST_TO_CATEGORY)
+SOURCE_CATEGORY_TEXT = ", ".join(ALLOWED_URL_HOST_TO_CATEGORY.values())
 
 THREAD_OPENING_TAG = "<thread>"
 THREAD_CLOSING_TAG = "</thread>"
@@ -60,6 +84,7 @@ THREAD_GROUPER_MAX_EMAILS = 20
 EMAIL_WRITER_PROFILE = "email_writer"
 THREAD_GROUPER_PROFILE = "thread_grouper"
 DATA_CLEANER_PROFILE = "data_cleaner"
+QUERY_TRANSLATOR_PROFILE = "query_translator"
 
 DIRECTOR_EMAIL = "masteria.dia@fi.upm.es"
 DIRECTOR_NAME = "Damiano Zanardini"
@@ -81,7 +106,9 @@ EXAMPLE_PROF2_EMAIL = "luis.martin@fi.upm.es"
 
 MODEL_PROFILES = {
     EMAIL_WRITER_PROFILE: {
-        "model_path": "Qwen/Qwen3-8B-FP8",
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": True,
         "is_vision_model": False,
         "system_prompt": "You are a concise, professional corporate email assistant.",
         "prompt_template": (
@@ -139,11 +166,12 @@ MODEL_PROFILES = {
         "top_p": 0.8,
         "top_k": 20,
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "enable_thinking": True,
         "return_prompt_text": True
     },
     THREAD_GROUPER_PROFILE: {
-        "model_path": "Qwen/Qwen3-8B-FP8",
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": True,
         "is_vision_model": False,
         "system_prompt": (
             "You are an expert email thread reconstruction assistant."
@@ -263,64 +291,104 @@ MODEL_PROFILES = {
             "Output:\n"
         ),
         "max_new_tokens": 8192,
-        "temperature": 0.3,
+        "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "enable_thinking": True,
         "return_prompt_text": True
     },
     DATA_CLEANER_PROFILE: {
-        "model_path": "Qwen/Qwen3-8B-FP8",
+        "provider": "local", # local or openai
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8", # gpt-5-mini or Qwen/Qwen3-8B-FP8
+        "enable_thinking": True,
+        "reasoning_effort": "minimal",
         "is_vision_model": False,
         "system_prompt": (
-            "You are an expert Knowledge Curator for a RAG system. Your task is to transform the following raw text into a high-quality, English-language knowledge base entry.\n\n"
-            "### CONTEXTUAL INFORMATION & RULES:\n"
-            "1. **Origin**: This text was crawled for the MUIA (Master Universitario en Inteligencia Artificial) at Universidad Politécnica de Madrid (UPM).\n"
-            "2. **Scope**: Content generally falls into two categories: specific MUIA details (subjects, seminars) or general UPM info (enrollment, other degrees). **Crucial**: You must explicitly note what the information belongs to (MUIA vs General UPM) in your outputs to preserve context.\n"
-            "3. **Time Awareness**: You will receive the current date. Some resources may be outdated; if you detect dates in the text, note them and warn if content might be obsolete.\n"
-            "4. **Context Inputs**: You will receive 'Page History' containing abstracts and summaries from previous chunks. Each entry includes its **Chunk Index** so you can determine its position in the document. **Note**: This history may be non-consecutive (e.g., Chunks 0-4 to provide you with beginning-of-document context followed by Chunks 35-40 to provide you with latest-chunks context).\n"
-            "5. **Continuity**: You will receive the 'Previous Chunk Cleaned Text' to ensure grammatical continuity with the current input (for example, a question or link might have been cut off and this may give you the chance to reconstruct it).\n\n"
-            "### OUTPUT INSTRUCTIONS:\n"
-            "1. **Translate**: Translate ALL content into English, regardless of the source language.\n"
-            f"2. **Clean & Format**: Fix broken sentences. Aggressively remove table-of-contents dots (e.g., ......15), page numbers, and residual formatting noise. Enclose the final cleaned text in {CLEANED_TEXT_OPENING_TAG} tags.\n"
-            f"3. **Abstract**: Provide a concise 1-sentence overview inside {ABSTRACT_OPENING_TAG} tags. Mention if it applies to MUIA or UPM generally.\n"
-            f"4. **Summary**: Provide a detailed, reorganized summary of the key facts inside {SUMMARY_OPENING_TAG} tags. Explicitly state if the info is MUIA-specific or general UPM.\n"
-            f"5. **Augment**: Generate up to 20 Q&A pairs inside {QUESTIONS_OPENING_TAG} tags, using {QUESTION_OPENING_TAG} and {ANSWER_OPENING_TAG} for each pair. Extract every possible fact. **IMPORTANT**: Answers must contain specific details (names, dates, EXACT URLs) and explicitly mention if they refer to MUIA or UPM to ensure standalone context.\n\n"
-            "### Q&A QUALITY GUIDELINES:\n"
-            "**Negative Examples (Avoid These Mistakes):**\n\n"
-            "Example 1 (Irrelevance):\n"
-            f"{QUESTION_OPENING_TAG}What is the note regarding the currency and language of the ticket pricing page?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}The ticket pricing page is in Spanish.{ANSWER_CLOSING_TAG}\n"
-            "Critique: Not relevant. Do not include meta-commentary about the page format.\n\n"
-            "Example 2 (Outdated Information & Meta-pairs):\n"
-            f"{QUESTION_OPENING_TAG}When was the MLAS event held that is referenced in the text?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}The 17th MLAS event was held in 2025, and the information is outdated as of 2026.{ANSWER_CLOSING_TAG}\n"
-            f"{QUESTION_OPENING_TAG}What are the ticket prices for buses 591, 865, and the light rail?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}A single trip costs 2 euros, while a 10-ride ticket costs 12.20 euros.{ANSWER_CLOSING_TAG}\n"
-            "Critique: Good intention, but the fact that information may be outdated should be embedded in each specific pair, not as a separate meta-pair.\n"
-            "**Better Version:**\n"
-            f"{QUESTION_OPENING_TAG}What are the ticket prices for buses 591, 865, and the light rail?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}As of 2025 (17th MLAS event), a single trip costs 2 euros, while a 10-ride ticket costs 12.20 euros.{ANSWER_CLOSING_TAG}\n\n"
-            "Example 3 (Missing Context):\n"
-            f"{QUESTION_OPENING_TAG}What is the recommended route after exiting the light-rail station?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}Participants should turn right and walk down Avda. Montepríncipe, as indicated by the Google Maps link.{ANSWER_CLOSING_TAG}\n"
-            "Critique: Participants of what? Recommended route to where? Each pair must be standalone.\n"
-            "**Better Version:**\n"
-            f"{QUESTION_OPENING_TAG}What is the recommended route for MLAS participants after exiting the light-rail station?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}MLAS participants should turn right after exiting the light-rail station and walk down Avda. Montepríncipe.{ANSWER_CLOSING_TAG}\n\n"
-            "Example 4 (Ambiguous Entities):\n"
-            f"{QUESTION_OPENING_TAG}Which metro lines connect to the campus via bus 865?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}Bus 865 connects to the campus from Moncloa (metro lines 6 and 3).{ANSWER_CLOSING_TAG}\n"
-            "Critique: Which campus? Questions and answers must be specific.\n"
-            "**Better Version:**\n"
-            f"{QUESTION_OPENING_TAG}Which metro lines connect to the Montegancedo Campus via bus 865?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}Bus 865 connects to the Montegancedo Campus from Moncloa (metro lines 6 and 3).{ANSWER_CLOSING_TAG}\n\n"
-            "Example 5 (False Specificity):\n"
-            f"{QUESTION_OPENING_TAG}Which group has collaborated with companies like Progenika Biopharma and Panda Security?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}The Computational Intelligence Group (CIG) has collaborated with companies such as Progenika Biopharma and Panda Security.{ANSWER_CLOSING_TAG}\n"
-            "Critique: Asking 'Which group...' implies CIG is the only one. It is safer to invert the question.\n"
-            "### SAMPLE RESPONSE:\n"
+            "You are an expert Knowledge Curator for RAG."
+        ),
+        "prompt_template": (
+            "Your job is to take source texts and convert them into four outputs: cleaned text, abstract, summary, and Q&A pairs.\n"
+            "To help you do this well, the following instructions explain the wider product that this knowledge-curation step supports.\n\n"
+            "This data will be used by a retrieval system for current and prospective students interested in MUIA (Master's Degree in Artificial Intelligence) at UPM, coordinated by the Department of Artificial Intelligence (DIA) at FI-UPM.\n"
+            "UPM offers many degrees, master's programs, and PhD programs. FI-UPM also offers several different informatics-related degrees, master's programs, and PhD programs. The Department of Artificial Intelligence also appears in contexts that are not only about MUIA.\n"
+            "Because of that, scope and contextualization are critical, especially in Q&A pairs.\n"
+            "Do not confuse MUIA with other UPM programs.\n"
+            f"Known non-MUIA UPM títulos propios include: {', '.join(NON_MUIA_TITULOS_PROPIOS)}.\n"
+            f"Known non-MUIA official master's programs include: {', '.join(NON_MUIA_OFFICIAL_MASTERS)}.\n"
+            "Your task is to transform the following raw text chunk (a fragment of content from a source URL) into a high-quality, English-language knowledge base entry.\n"
+            f"Content usually comes from one of these {SOURCE_HOST_CATEGORY_COUNT} sources: {SOURCE_HOST_CATEGORY_TEXT}. If a source URL is outside this mapping, assume it belongs to the most general category unless the text clearly indicates another category.\n"
+            f"This matters because many chunks include numbers (prices, credits, dates, requirements), and those facts are only correct when tied to the right scope ({SOURCE_CATEGORY_TEXT}).\n"
+            "For each chunk, you must produce four outputs: cleaned text, abstract, summary, and Q&A pairs.\n\n"
+            "### CONTEXTUAL INFORMATION:\n"
+            "1. You will receive 'Page History' containing abstracts and summaries from previous chunks. Each entry includes its **Chunk Index** so you can determine its position in the document. **Note**: This history may be non-consecutive (e.g., Chunks 0-4 to provide you with beginning-of-document context followed by Chunks 35-40 to provide you with latest-chunks context).\n"
+            "2. You will receive the 'Previous Chunk Cleaned Text' to ensure grammatical continuity with the current input (for example, a question or link might have been cut off and this may give you the chance to reconstruct it).\n\n"
+            "### GENERAL INSTRUCTIONS:\n"
+            "1. Write all outputs in English, regardless of the source language.\n"
+            "2. Remove non-content noise from all outputs: navigation menus, footer boilerplate, image placeholders, table-of-contents dots, page-number artifacts, and similar formatting residue. Keep links only when they carry useful factual information.\n\n"
+            "### OUTPUT-SPECIFIC INSTRUCTIONS:\n"
+            f"1. **Cleaned Text**: Fix broken sentences and formatting issues (for example, content split across multiple lines), removing non-content noise (for example, menus, footers, image placeholders, table-of-contents artifacts, etc.), writing cleaned text in English, and outputting it inside {CLEANED_TEXT_OPENING_TAG} tags. This output is for cleanup, not relevance filtering: keep all remaining content and do not drop content based on relevance.\n"
+            "2. **Abstract, Summary, Q&A type of content**: Include student-facing information (for example, admission and selection rules, recognition/transfer of credits, enrollment process (steps, required documents, deadlines, and fees), teaching and course logistics (language of instruction, schedules, subjects, seminars, passing requirements, evaluation timing/dates, and project types), mobility/exchange options, housing/support resources, quality/ranking context, etc.). Exclude document-internal/meta content (for example, 'what appears in table 14'), dense legal/governance details, project funding amounts, generic news, and one-off trivia (for example, who received a past award), unless directly useful for student-facing decisions or procedures.\n"
+            "3. **Abstract, Summary, Q&A style**: Write in clear, user-facing language for students/prospective students and staff contacting the MUIA team. Avoid document-internal or meta wording such as 'what is mentioned', 'what appears in table X', or 'referenced in the text'. Do not use ambiguous wording like 'this program', 'it', or 'the reservation fee' without naming what they refer to.\n"
+            f"4. **Abstract**: Provide a concise 1-sentence overview inside {ABSTRACT_OPENING_TAG} tags. Do not mention scope/category by default. Only if the text clearly indicates a scope different from the provided Source Category, add a brief scope note.\n"
+            f"5. **Summary**: Provide a detailed, reorganized summary of the key facts inside {SUMMARY_OPENING_TAG} tags. Do not force scope/category labels. Only if the text clearly indicates a scope different from the provided Source Category, add a brief scope note.\n"
+            f"6. **Q&A Pairs**: Generate up to {Q_AND_A_MAX_PAIRS} Q&A pairs inside {QUESTIONS_OPENING_TAG} tags, using {QUESTION_OPENING_TAG} and {ANSWER_OPENING_TAG} for each pair. Write questions that sound like what a current or prospective student would naturally ask in a search box or in an email, not like what a curator would ask after reading the page. Prioritize interesting, actionable, and decision-relevant questions over trivial, meta, or catalog-style questions. Each question and answer must be fully self-contained because source text and page context may not be available at retrieval time: never use vague references such as 'this program', 'this page', 'this resource', or 'in the text'. Answers must contain **all specific details**. You are not required to hit the maximum number of Q&A pairs: generate fewer pairs when the chunk supports fewer distinct, useful questions, and avoid repetitive or near-duplicate pairs.\n"
+            "### Q&A RETRIEVAL CONSTRAINTS:\n"
+            "CRITICAL: Each question will be embedded and retrieved independently. There is no shared context between questions. Therefore every question must be fully self-contained and must explicitly name the exact entity it refers to.\n"
+            "HARD RULE: Every question must explicitly include the exact name of the entity it refers to, such as the specific program, faculty, department, campus, scholarship, event, document, or service.\n"
+            "NEVER use vague references such as 'the program', 'this program', 'the master's program', 'the doctorate', 'this degree', 'the faculty', 'the department', 'the campus', 'students', 'admission requirements', 'duration', 'structure', 'career outcomes', 'the official page', 'the website', 'it', 'its', or similar wording unless the exact entity name also appears in the same question.\n"
+            "Repetition is required, not a problem. If multiple questions refer to the same entity, repeat the entity name in every question.\n"
+            "Before finalizing each question, perform this check: if the question is read alone, without the source text, page history, summary, or any previous question, is the target entity still unambiguous? If not, rewrite it.\n"
+            "Output only questions that pass this check.\n"
+            "### Q&A RELEVANCE CONSTRAINTS:\n"
+            "Questions must be genuinely useful for retrieval and useful for a student or prospective student. A good question helps a person decide whether to apply, enroll, plan studies, understand costs, understand requirements, compare options, or solve an academic or administrative issue.\n"
+            "Prefer questions about admissions, deadlines, fees, scholarships, modality, language of instruction, credits, duration, schedules, curriculum structure, mobility, internships, final projects, research opportunities, career outcomes, contacts, official procedures, and important recognition or ranking information.\n"
+            "Avoid low-value questions that merely restate labels, headings, organization charts, or isolated names unless that information clearly helps a student make a decision or solve a real problem.\n"
+            "Bad question example: 'What is the full name of the department that the Department of Artificial Intelligence belongs to?' This is too indirect, unnatural, and low-value for student retrieval.\n"
+            "Bad question example: 'What is the name of the course that focuses on medical data analysis?' This is too narrow and catalog-like unless the source clearly presents that course as an important decision point.\n"
+            "Good question example: 'Which languages is the MUIA taught in?'\n"
+            "Good question example: 'What is the cost of completing the MUIA?'\n"
+            "Good question example: 'What scholarships are available for the MUIA?'\n"
+            "Good question example: 'What career outcomes does the MUIA offer?'\n"
+            "If a candidate question feels like a fact lookup that no normal student would ask, do not include it.\n"
+            "If several candidate questions are all asking about the same fact, keep only the single most useful, natural, and general version.\n"
+            "If a chunk contains only one or two genuinely useful questions, output only one or two questions.\n"
+            # "### Q&A QUALITY GUIDELINES:\n"
+            # "**Negative Examples (Avoid These Mistakes):**\n\n"
+            # "Example 1 (Irrelevance):\n"
+            # f"{QUESTION_OPENING_TAG}What is the note regarding the currency and language of the ticket pricing page?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}The ticket pricing page is in Spanish.{ANSWER_CLOSING_TAG}\n"
+            # "Critique: Not relevant. Do not include meta-commentary about the page format.\n\n"
+            # "Example 2 (Outdated Information & Meta-pairs):\n"
+            # f"{QUESTION_OPENING_TAG}When was the MLAS event held that is referenced in the text?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}The 17th MLAS event was held in 2025, and the information is outdated as of 2026.{ANSWER_CLOSING_TAG}\n"
+            # f"{QUESTION_OPENING_TAG}What are the ticket prices for buses 591, 865, and the light rail?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}A single trip costs 2 euros, while a 10-ride ticket costs 12.20 euros.{ANSWER_CLOSING_TAG}\n"
+            # "Critique: Good intention, but the fact that information may be outdated should be embedded in each specific pair, not as a separate meta-pair.\n"
+            # "**Better Version:**\n"
+            # f"{QUESTION_OPENING_TAG}What are the ticket prices for buses 591, 865, and the light rail?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}As of 2025 (17th MLAS event), a single trip costs 2 euros, while a 10-ride ticket costs 12.20 euros.{ANSWER_CLOSING_TAG}\n\n"
+            # "Example 3 (Missing Context):\n"
+            # f"{QUESTION_OPENING_TAG}What is the recommended route after exiting the light-rail station?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}Participants should turn right and walk down Avda. Montepríncipe, as indicated by the Google Maps link.{ANSWER_CLOSING_TAG}\n"
+            # "Critique: Participants of what? Recommended route to where? Each pair must be standalone.\n"
+            # "**Better Version:**\n"
+            # f"{QUESTION_OPENING_TAG}What is the recommended route for MLAS participants after exiting the light-rail station?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}MLAS participants should turn right after exiting the light-rail station and walk down Avda. Montepríncipe.{ANSWER_CLOSING_TAG}\n\n"
+            # "Example 4 (Ambiguous Entities):\n"
+            # f"{QUESTION_OPENING_TAG}Which metro lines connect to the campus via bus 865?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}Bus 865 connects to the campus from Moncloa (metro lines 6 and 3).{ANSWER_CLOSING_TAG}\n"
+            # "Critique: Which campus? Questions and answers must be specific.\n"
+            # "**Better Version:**\n"
+            # f"{QUESTION_OPENING_TAG}Which metro lines connect to the Montegancedo Campus via bus 865?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}Bus 865 connects to the Montegancedo Campus from Moncloa (metro lines 6 and 3).{ANSWER_CLOSING_TAG}\n\n"
+            # "Example 5 (False Specificity):\n"
+            # f"{QUESTION_OPENING_TAG}Which group has collaborated with companies like Progenika Biopharma and Panda Security?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}The Computational Intelligence Group (CIG) has collaborated with companies such as Progenika Biopharma and Panda Security.{ANSWER_CLOSING_TAG}\n"
+            # "Critique: Asking 'Which group...' implies CIG is the only one. It is safer to invert the question.\n"
+            # "**Better Version:**\n"
+            # f"{QUESTION_OPENING_TAG}Which companies has the Computational Intelligence Group (CIG) collaborated with?{QUESTION_CLOSING_TAG}\n"
+            # f"{ANSWER_OPENING_TAG}The Computational Intelligence Group (CIG) has collaborated with companies such as Progenika Biopharma and Panda Security.{ANSWER_CLOSING_TAG}\n"
+            "### EXAMPLE TRANSFORMATION:\n"
             "**Page History Context**:\n"
             "[list of previous abstracts/summaries with chunk indices...]\n"
             "**Previous Chunk Cleaned Text**:\n"
@@ -354,22 +422,18 @@ MODEL_PROFILES = {
             f"{CLEANED_TEXT_CLOSING_TAG}\n"
             f"{QUESTIONS_OPENING_TAG}\n"
             f"{QUESTION_OPENING_TAG}What is the primary orientation of the MUIA master's degree?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}The MUIA program is research-oriented.{ANSWER_CLOSING_TAG}\n"
-            f"{QUESTION_OPENING_TAG}Which specific department organizes the MUIA program?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}The Department of Artificial Intelligence (DIA) at UPM.{ANSWER_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}Research-oriented.{ANSWER_CLOSING_TAG}\n"
             f"{QUESTION_OPENING_TAG}Where is the MUIA master's degree taught?{QUESTION_CLOSING_TAG}\n"
             f"{ANSWER_OPENING_TAG}It is taught at the School of Computer Engineering of the Technical University of Madrid (UPM).{ANSWER_CLOSING_TAG}\n"
             f"{QUESTION_OPENING_TAG}How has the MUIA program been recognized in national rankings?{QUESTION_CLOSING_TAG}\n"
             f"{ANSWER_OPENING_TAG}It has been recognized as one of the best masters in specialized informatics in Spain by El Mundo newspaper (among the top three for fourteen editions).{ANSWER_CLOSING_TAG}\n"
             f"{QUESTION_OPENING_TAG}When did the MUIA program begin?{QUESTION_CLOSING_TAG}\n"
             f"{ANSWER_OPENING_TAG}It began in the 2010/11 academic year.{ANSWER_CLOSING_TAG}\n"
-            f"{QUESTION_OPENING_TAG}Where can the Department of Artificial Intelligence (DIA) be accessed at?{QUESTION_CLOSING_TAG}\n"
-            f"{ANSWER_OPENING_TAG}It can be accessed at https://dia.fi.upm.es/{ANSWER_CLOSING_TAG}\n"
-            f"{QUESTIONS_CLOSING_TAG}"
-        ),
-        "prompt_template": (
+            f"{QUESTIONS_CLOSING_TAG}\n\n"
             "### CURRENT TASK:\n"
             "**Current Date**: {datetime}\n"
+            "**Source URL**: {source_url}\n"
+            "**Source Category**: {source_category}\n"
             "**Page History Context**:\n{page_history_context}\n"
             "**Previous Chunk Cleaned Text**:\n{previous_chunk_context}\n"
             "**Input Text**:\n{text}\n\n"
@@ -377,16 +441,41 @@ MODEL_PROFILES = {
         ),
         "max_chunk_size": 1024,
         "max_new_tokens": 8192,
+        "temperature": 0.1,
+        "top_p": 0.8,
+        "top_k": 20,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": True
+    },
+    QUERY_TRANSLATOR_PROFILE: {
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": False,
+        "is_vision_model": False,
+        "system_prompt": (
+            "You are an expert translator for retrieval queries."
+        ),
+        "prompt_template": (
+            "Translate the following email text into natural English.\n"
+            "Preserve the original meaning, key entities, links, dates, and numbers.\n"
+            "Output only the translation inside these tags:\n"
+            f"{TRANSLATION_OPENING_TAG}...{TRANSLATION_CLOSING_TAG}\n\n"
+            "Input text:\n"
+            "---\n"
+            "{text}\n"
+            "---\n"
+            "Output:\n"
+        ),
+        "max_new_tokens": 8192,
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "enable_thinking": True,
-        "return_prompt_text": True
+        "return_prompt_text": False
     }
 }
 
-_image_flash_attention = (
+_image_flash_attention_base = (
     modal.Image.from_registry(FLASH_ATTENTION_IMAGE)
     .run_commands(FLASH_ATTENTION_RUN_COMMANDS)
     .pip_install(
@@ -395,17 +484,15 @@ _image_flash_attention = (
         )
     .pip_install(FLASH_ATTENTION_RELEASE)
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-    # Run `image.add_local_*` commands last in your image build to avoid rebuilding images with every local file change.
-    .add_local_python_source("config", "helpers")
 )
-_image_no_flash_attention = (
+_image_no_flash_attention_base = (
     modal.Image.debian_slim(python_version=NO_FLASH_ATTENTION_PYTHON_VERSION)
     .pip_install(
         NO_FLASH_ATTENTION_TORCH_VERSION,
         *COMMON_PACKAGES
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-    # Run `image.add_local_*` commands last in your image build to avoid rebuilding images with every local file change.
-    .add_local_python_source("config", "helpers")
 )
-image = _image_flash_attention if USE_FLASH_ATTENTION_IMAGE else _image_no_flash_attention
+base_image = _image_flash_attention_base if USE_FLASH_ATTENTION_IMAGE else _image_no_flash_attention_base
+# Run `image.add_local_*` commands last in your image build to avoid rebuilding images with every local file change.
+image = base_image.add_local_python_source("config", "helpers")
