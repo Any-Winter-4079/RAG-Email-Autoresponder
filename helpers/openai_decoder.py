@@ -12,7 +12,6 @@ from config.decoder import (
 )
 from helpers.decoder import remove_think_tokens, extract_lm_cleaned_content
 
-
 def run_openai_data_cleaner(
     current_turn_input_text,
     system_prompt,

@@ -365,7 +365,7 @@ def build_samples_by_folder_uri_and_thread_id(messages_with_threads_header, mess
 
                 context_emails = thread_emails[:email_index]
                 later_emails = thread_emails[email_index + 1:]
-                gold_reply_candidates = [
+                other_gold_reply_candidates = [
                     later_email
                     for later_email in later_emails
                     if bool(extract_emails(later_email["author"]).intersection(my_email_addresses))
@@ -373,14 +373,14 @@ def build_samples_by_folder_uri_and_thread_id(messages_with_threads_header, mess
 
                 email_author_emails = extract_emails(email["author"])
                 gold_reply = None
-                if gold_reply_candidates:
-                    for candidate in gold_reply_candidates:
+                if other_gold_reply_candidates:
+                    for candidate in other_gold_reply_candidates:
                         candidate_recipient_emails = extract_emails(candidate["recipients"])
                         if email_author_emails.intersection(candidate_recipient_emails):
                             gold_reply = candidate
                             break
                     if gold_reply is None:
-                        gold_reply = gold_reply_candidates[0]
+                        gold_reply = other_gold_reply_candidates[0]
 
                 thread_samples.append({
                     "folder_uri": folder_uri,
@@ -388,7 +388,11 @@ def build_samples_by_folder_uri_and_thread_id(messages_with_threads_header, mess
                     "email": email,
                     "context_emails": context_emails,
                     "gold_reply": gold_reply,
-                    "gold_reply_candidates": gold_reply_candidates,
+                    "other_gold_reply_candidates": [
+                        candidate
+                        for candidate in other_gold_reply_candidates
+                        if candidate != gold_reply
+                    ],
                     "thread_size": thread_size,
                 })
 

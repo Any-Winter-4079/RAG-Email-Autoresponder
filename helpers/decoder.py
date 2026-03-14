@@ -143,8 +143,24 @@ def extract_lm_cleaned_content(
 
     return [abstract, summary, cleanedtext, questions, answers]
 
+##########################################
+# Helper 6: Extract <score>...</score>'s #
+##########################################
+def extract_score_values(response, score_opening_tag, score_closing_tag):
+    scores = extract_matched_content(response, score_opening_tag, score_closing_tag)
+    if not scores:
+        return None
+
+    parsed_scores = []
+    for score in scores:
+        try:
+            parsed_scores.append(float(score))
+        except Exception:
+            return None
+    return parsed_scores
+
 ##########################
-# Helper 6: Count tokens #
+# Helper 7: Count tokens #
 ##########################
 def count_tokens(tokenizer, text):
     try:
@@ -154,7 +170,7 @@ def count_tokens(tokenizer, text):
         return 0
 
 ################################
-# Helper 7: Truncate to tokens #
+# Helper 8: Truncate to tokens #
 ################################
 def truncate_to_tokens(tokenizer, text, max_tokens):
     try:
