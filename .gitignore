@@ -2,6 +2,7 @@ data/email_messages/
 data/knowledge_base_messages/
 data/split_datasets/
 eval/results/
+eval/cache/
 .DS_Store
 __pycache__/
 .env
