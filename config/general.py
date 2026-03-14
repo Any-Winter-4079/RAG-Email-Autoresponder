@@ -18,3 +18,18 @@ LEGACY_COLLECTIONS = [
     "lm_q_and_a_chunks",
     "lm_q_and_a_for_q_only_chunks",
 ]
+
+LEGACY_VOLUME_FOLDERS = [
+    "raw",
+    "manually_cleaned",
+    "raw_chunks",
+    "manually_cleaned_chunks",
+    "lm_cleaned_text_chunks",
+    "lm_abstract_chunks",
+    "lm_summary_chunks",
+    "lm_q_and_a_chunks",
+    "lm_cleaned_text_subchunks",
+    "lm_summary_subchunks",
+    "lm_q_and_a_valid_chunks",
+    "lm_q_and_a_for_q_only_valid_chunks",
+]

@@ -38,6 +38,55 @@ CLEANED_TEXT_OPENING_TAG = "<cleanedtext>"
 CLEANED_TEXT_CLOSING_TAG = "</cleanedtext>"
 TRANSLATION_OPENING_TAG = "<translation>"
 TRANSLATION_CLOSING_TAG = "</translation>"
+QUERIES_OPENING_TAG = "<queries>"
+QUERIES_CLOSING_TAG = "</queries>"
+QUERY_OPENING_TAG = "<query>"
+QUERY_CLOSING_TAG = "</query>"
+KEYWORD_QUERIES_OPENING_TAG = "<keywordqueries>"
+KEYWORD_QUERIES_CLOSING_TAG = "</keywordqueries>"
+NATURAL_QUERIES_OPENING_TAG = "<naturalqueries>"
+NATURAL_QUERIES_CLOSING_TAG = "</naturalqueries>"
+QUESTION_QUERIES_OPENING_TAG = "<questionqueries>"
+QUESTION_QUERIES_CLOSING_TAG = "</questionqueries>"
+QUERY_REWRITER_MAX_QUERIES = 18
+OLD_MUIA_SUBJECT_AND_SEMINAR_CODE_MAPPING_TEXT = (
+    "S1: Metodología de la investigación | Research Methodology\n"
+    "S2: Gestión de proyectos y análisis de riesgos | Project Management and Risk Analysis\n"
+    "S3: Aspectos éticos y legales de la Inteligencia Artificial | Ethical and Legal Aspects of Artificial Intelligence\n"
+    "S4: Inteligencia Artificial e inclusión | Artificial Intelligence and Inclusion\n"
+    "A1: Sistemas de ayuda a la decisión | Decision Support Systems\n"
+    "A2: Decisión participativa y negociación | Participatory Decision-Making and Negotiation\n"
+    "A3: Métodos de simulación | Simulation Methods\n"
+    "S5: Análisis de decisiones | Decision Analysis\n"
+    "A4: Redes bayesianas | Bayesian Networks\n"
+    "A5: Aprendizaje automático | Machine Learning\n"
+    "A6: Redes de neuronas artificiales y Deep Learning | Artificial Neural Networks and Deep Learning\n"
+    "A7: Inteligencia artificial explicable | Explainable Artificial Intelligence\n"
+    "S6: Aprendizaje automático | Machine Learning\n"
+    "A8: Búsqueda inteligente basada en metaheurísticas | Intelligent Search Based on Metaheuristics\n"
+    "A9: Computación evolutiva | Evolutionary Computation\n"
+    "A10: Biología programable: Computación con ADN e Ingeniería de biocircuitos | Programmable Biology: DNA Computing and Biocircuit Engineering\n"
+    "S7: Computación natural | Natural Computing\n"
+    "A11: Programación lógica | Logic Programming\n"
+    "A12: Sistemas multiagente | Multi-Agent Systems\n"
+    "A13: Ingeniería ontológica | Ontological Engineering\n"
+    "A14: Modelos de razonamiento | Reasoning Models\n"
+    "S8: Representación del conocimiento y razonamiento | Knowledge Representation and Reasoning\n"
+    "S9: Lógica borrosa | Fuzzy Logic\n"
+    "S10: Computación cognitiva | Cognitive Computing\n"
+    "A15: Visión por computador | Computer Vision\n"
+    "A16: Robots autónomos | Autonomous Robots\n"
+    "S11: Robótica cognitiva y percepción | Cognitive Robotics and Perception\n"
+    "S12: Principios de la locomoción robótica | Principles of Robotic Locomotion\n"
+    "A17: Informática biomédica | Biomedical Informatics\n"
+    "A18: Ingeniería lingüística | Linguistic Engineering\n"
+    "A19: Ciencia de la web | Web Science\n"
+    "A20: Deep Learning para el Procesamiento del Lenguaje Natural | Deep Learning for Natural Language Processing\n"
+    "S13: Aplicaciones de la Inteligencia Artificial | Applications of Artificial Intelligence\n"
+    "S14: Procesamiento del lenguaje natural | Natural Language Processing\n"
+    "S15: Planificación automática | Automated Planning\n"
+    "S16: IA Generativa y Prompt Engineering: Aplicaciones y Retos | Generative AI and Prompt Engineering: Applications and Challenges"
+)
 
 QUESTIONS_OPENING_TAG = "<questions>"
 QUESTIONS_CLOSING_TAG = "</questions>"
@@ -45,6 +94,10 @@ QUESTION_OPENING_TAG = "<question>"
 QUESTION_CLOSING_TAG = "</question>"
 ANSWER_OPENING_TAG = "<answer>"
 ANSWER_CLOSING_TAG = "</answer>"
+SCORES_OPENING_TAG = "<scores>"
+SCORES_CLOSING_TAG = "</scores>"
+SCORE_OPENING_TAG = "<score>"
+SCORE_CLOSING_TAG = "</score>"
 Q_AND_A_MAX_PAIRS = 20
 NON_MUIA_TITULOS_PROPIOS = [
     "Máster en Fundamentos y Aplicaciones de la Inteligencia Artificial",
@@ -84,7 +137,8 @@ THREAD_GROUPER_MAX_EMAILS = 20
 EMAIL_WRITER_PROFILE = "email_writer"
 THREAD_GROUPER_PROFILE = "thread_grouper"
 DATA_CLEANER_PROFILE = "data_cleaner"
-QUERY_TRANSLATOR_PROFILE = "query_translator"
+QUERY_REWRITER_PROFILE = "query_rewriter"
+LLM_JUDGE_PROFILE = "llm_judge"
 
 DIRECTOR_EMAIL = "masteria.dia@fi.upm.es"
 DIRECTOR_NAME = "Damiano Zanardini"
@@ -447,20 +501,76 @@ MODEL_PROFILES = {
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
         "return_prompt_text": True
     },
-    QUERY_TRANSLATOR_PROFILE: {
+    QUERY_REWRITER_PROFILE: {
         "provider": "local",
         "model_name_or_path": "Qwen/Qwen3-8B-FP8",
-        "enable_thinking": False,
+        "enable_thinking": True,
         "is_vision_model": False,
         "system_prompt": (
-            "You are an expert translator for retrieval queries."
+            "You are an expert at generating retrieval queries."
         ),
         "prompt_template": (
-            "Translate the following email text into natural English.\n"
-            "Preserve the original meaning, key entities, links, dates, and numbers.\n"
-            "Output only the translation inside these tags:\n"
-            f"{TRANSLATION_OPENING_TAG}...{TRANSLATION_CLOSING_TAG}\n\n"
-            "Input text:\n"
+            f"Your task is to generate up to {QUERY_REWRITER_MAX_QUERIES} retrieval queries for the following email.\n"
+            "The goal is to maximize the chances of retrieving similar and useful chunks from a knowledge base.\n\n"
+            "### KNOWLEDGE BASE CONTEXT:\n"
+            "The knowledge base was built by crawling webpages mainly related to the Master Universitario en Inteligencia Artificial, "
+            "the Department of Artificial Intelligence, the Facultad or Escuela that hosts the program, and Universidad Politecnica de Madrid. "
+            "Those webpages were chunked. Another language model then cleaned the chunks, translated most content into English, generated summaries, "
+            "and generated question-answer pairs. Because of this pipeline, the knowledge base may contain English cleaned text, English summaries with explicit entities, "
+            "question-like text, and occasional mixed English and Spanish entity names.\n\n"
+            "Retrieval uses several encoders, including sparse frequency-based encoders and dense encoders. Long emails often contain many words that are not useful for retrieval. "
+            "Because of this, generate a mix of query styles: some very short keyword-focused queries for sparse frequency-based encoders, some clear natural-language queries for dense encoders, "
+            "and some queries written as questions to match question-answer pairs in the knowledge base. Write the queries in English, because that is the main language of the knowledge base. "
+            "However, because the cleaner model sometimes kept entity names in Spanish instead of translating them, generate additional English queries where only the relevant entity remains in Spanish while the rest of the query stays in English.\n\n"
+            "### CURRENT SUBJECT AND SEMINAR CODE MAPPING:\n"
+            "The following is the current best mapping we have between subject and seminar codes and subject and seminar names in Spanish and English. "
+            "We provide this mapping because people usually mention the subject or seminar name in an email, not the code, but the cleaner model sometimes kept the Spanish name, "
+            "sometimes translated the name into English, and sometimes replaced the name with the code. If the email is not about a concrete subject or seminar that appears in this mapping, ignore this mapping completely. "
+            "Do not use it for overall program-level mentions such as a master's program name, and do not use it just because some words overlap with a subject or seminar name. "
+            "If the email explicitly mentions a concrete subject or seminar and the mapping suggests a code, generate one English query with the name in English, one English query where that entity remains in Spanish, and one English query that uses the code instead of the subject or seminar name.\n"
+            f"{OLD_MUIA_SUBJECT_AND_SEMINAR_CODE_MAPPING_TEXT}\n\n"
+            "### WHAT TO DO:\n"
+            "1. Prioritize the main administrative or academic request in the email.\n"
+            "2. If the email contains multiple distinct requests, generate queries for the different requests.\n"
+            "3. Remove greetings, signatures, politeness filler, and irrelevant conversational text.\n"
+            "4. Queries are used as-is against a knowledge base that can contain other programs, departments, and university entities. Do not use vague references such as 'this master's', 'the program', or 'that subject'. Name the concrete program, degree, subject, seminar, faculty, department, procedure, URL, date, number, or person when relevant.\n"
+            "5. For each query, include only the entities that help identify the target content. Do not include an entity just because it appears in the email.\n"
+            "6. Make the queries specific and self-contained.\n"
+            f"7. Output up to {QUERY_REWRITER_MAX_QUERIES} queries.\n\n"
+            "### OUTPUT FORMAT:\n"
+            f"Output only the queries inside these tags. Use all three sections, and put one or more query tags inside each section, totalling up to {QUERY_REWRITER_MAX_QUERIES}.\n"
+            f"{QUERIES_OPENING_TAG}\n"
+            f"{KEYWORD_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}keyword query here{QUERY_CLOSING_TAG}\n"
+            f"{KEYWORD_QUERIES_CLOSING_TAG}\n"
+            f"{NATURAL_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}natural query here{QUERY_CLOSING_TAG}\n"
+            f"{NATURAL_QUERIES_CLOSING_TAG}\n"
+            f"{QUESTION_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}question query here{QUERY_CLOSING_TAG}\n"
+            f"{QUESTION_QUERIES_CLOSING_TAG}\n"
+            f"{QUERIES_CLOSING_TAG}\n\n"
+            "### EXAMPLE:\n"
+            "Email:\n"
+            "---\n"
+            "Hola, me gustaria saber que conocimientos previos necesito para Redes bayesianas y si hay examen final.\n"
+            "---\n"
+            "Output:\n"
+            f"{QUERIES_OPENING_TAG}\n"
+            f"{KEYWORD_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}A4 prerequisites{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Redes bayesianas final exam{QUERY_CLOSING_TAG}\n"
+            f"{KEYWORD_QUERIES_CLOSING_TAG}\n"
+            f"{NATURAL_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Bayesian Networks prerequisites in the Master in Artificial Intelligence{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Final exam for Redes bayesianas in the Master in Artificial Intelligence{QUERY_CLOSING_TAG}\n"
+            f"{NATURAL_QUERIES_CLOSING_TAG}\n"
+            f"{QUESTION_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}What prior knowledge is required for Bayesian Networks A4?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Does Redes bayesianas A4 have a final exam?{QUERY_CLOSING_TAG}\n"
+            f"{QUESTION_QUERIES_CLOSING_TAG}\n"
+            f"{QUERIES_CLOSING_TAG}\n\n"
+            "Email:\n"
             "---\n"
             "{text}\n"
             "---\n"
@@ -468,6 +578,50 @@ MODEL_PROFILES = {
         ),
         "max_new_tokens": 8192,
         "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": False
+    },
+    LLM_JUDGE_PROFILE: {
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": True,
+        "is_vision_model": False,
+        "system_prompt": (
+            "You are an expert retrieval relevance judge."
+        ),
+        "prompt_template": (
+            "You will receive one user query and several candidate chunks.\n"
+            "Your task is to score how useful each candidate chunk is for answering the user query.\n\n"
+            "### SCORING CRITERIA:\n"
+            "Score each candidate chunk between 0.0 and 1.0 based on how useful it is for answering the query.\n"
+            "- 0.0: unrelated or useless\n"
+            "- 0.25: weak relevance\n"
+            "- 0.5: partially useful\n"
+            "- 0.75: strongly relevant\n"
+            "- 1.0: directly answers the query or provides the key missing facts\n\n"
+            "### SCORING RULES:\n"
+            "1. Return one score for each candidate chunk, in the same order as the input.\n"
+            "2. Each score must be a decimal number between 0.0 and 1.0.\n"
+            "3. Use 0.0 for no relevance, 1.0 for highly useful direct relevance, and intermediate values for partial usefulness.\n"
+            "4. Score usefulness for answering the query, not just keyword overlap.\n"
+            "5. Output only the scores inside the required tags.\n\n"
+            "### OUTPUT FORMAT:\n"
+            f"{SCORES_OPENING_TAG}\n"
+            f"{SCORE_OPENING_TAG}0.0{SCORE_CLOSING_TAG}\n"
+            f"{SCORE_OPENING_TAG}0.5{SCORE_CLOSING_TAG}\n"
+            f"{SCORE_OPENING_TAG}1.0{SCORE_CLOSING_TAG}\n"
+            f"{SCORES_CLOSING_TAG}\n\n"
+            "### INPUT:\n"
+            "Query:\n"
+            "{query}\n\n"
+            "Candidate Chunks:\n"
+            "{chunks}\n\n"
+            "Output:\n"
+        ),
+        "max_new_tokens": 2048,
+        "temperature": 0.3,
         "top_p": 0.8,
         "top_k": 20,
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
