@@ -1,5 +1,5 @@
 from config.general import modal_secret, rag_volume, VOLUME_PATH
-from config.modal_apps import ENCODER_CPU_RETRIEVER_APP_NAME
+from config.modal_apps import ENCODER_CPU_APP_NAME
 from config.encoder_cpu import (
     image,
     MODAL_TIMEOUT,
@@ -9,7 +9,25 @@ from config.encoder_cpu import (
 import modal
 
 # Modal
-app = modal.App(ENCODER_CPU_RETRIEVER_APP_NAME)
+app = modal.App(ENCODER_CPU_APP_NAME)
+
+@app.function(
+    image=image,
+    secrets=[modal_secret],
+    timeout=MODAL_TIMEOUT,
+    scaledown_window=SCALEDOWN_WINDOW,
+    min_containers=MIN_CONTAINERS,
+    volumes={VOLUME_PATH: rag_volume},
+)
+def run_encoder_cpu_batch_embedder(variant, batch, encoder):
+    from helpers.encoder import run_encoder_batch_embedder
+
+    return run_encoder_batch_embedder(
+        variant=variant,
+        batch=batch,
+        encoder=encoder,
+        worker_name="run_encoder_cpu_batch_embedder",
+    )
 
 @app.function(
     image=image,

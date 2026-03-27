@@ -9,7 +9,8 @@ from config.decoder import (
     DATA_CLEANER_PROFILE,
     EMAIL_WRITER_PROFILE,
     THREAD_GROUPER_PROFILE,
-    QUERY_TRANSLATOR_PROFILE
+    QUERY_REWRITER_PROFILE,
+    LLM_JUDGE_PROFILE
 )
 import modal
 
@@ -51,7 +52,8 @@ def run_qwen3_lm_or_vlm(
         extract_message_content,
         extract_lm_cleaned_content,
         extract_thread_content,
-        extract_matched_content
+        extract_query_rewriter_content,
+        extract_llm_judge_content,
     )
     from config.decoder import (
         MESSAGE_OPENING_TAG,
@@ -80,8 +82,40 @@ def run_qwen3_lm_or_vlm(
         QUESTION_CLOSING_TAG,
         ANSWER_OPENING_TAG,
         ANSWER_CLOSING_TAG,
-        TRANSLATION_OPENING_TAG,
-        TRANSLATION_CLOSING_TAG
+        ANSWERABILITY_OPENING_TAG,
+        ANSWERABILITY_CLOSING_TAG,
+        SUBQUERIES_OPENING_TAG,
+        SUBQUERIES_CLOSING_TAG,
+        SUBQUERY_OPENING_TAG,
+        SUBQUERY_CLOSING_TAG,
+        SUBQUERY_TEXT_OPENING_TAG,
+        SUBQUERY_TEXT_CLOSING_TAG,
+        SUBQUERY_ANSWERABILITY_OPENING_TAG,
+        SUBQUERY_ANSWERABILITY_CLOSING_TAG,
+        SUBQUERY_CONFIDENCE_OPENING_TAG,
+        SUBQUERY_CONFIDENCE_CLOSING_TAG,
+        SUBQUERY_SUPPORTING_CHUNK_IDS_OPENING_TAG,
+        SUBQUERY_SUPPORTING_CHUNK_IDS_CLOSING_TAG,
+        SUBQUERY_INSUFFICIENT_CHUNK_IDS_OPENING_TAG,
+        SUBQUERY_INSUFFICIENT_CHUNK_IDS_CLOSING_TAG,
+        SUBQUERY_RATIONALE_OPENING_TAG,
+        SUBQUERY_RATIONALE_CLOSING_TAG,
+        CHUNK_ID_OPENING_TAG,
+        CHUNK_ID_CLOSING_TAG,
+        DRAFT_ANSWER_OPENING_TAG,
+        DRAFT_ANSWER_CLOSING_TAG,
+        KEYWORD_QUERIES_OPENING_TAG,
+        KEYWORD_QUERIES_CLOSING_TAG,
+        NATURAL_QUERIES_OPENING_TAG,
+        NATURAL_QUERIES_CLOSING_TAG,
+        HYDE_QUERIES_OPENING_TAG,
+        HYDE_QUERIES_CLOSING_TAG,
+        QUESTION_QUERIES_OPENING_TAG,
+        QUESTION_QUERIES_CLOSING_TAG,
+        RERANKER_QUERY_OPENING_TAG,
+        RERANKER_QUERY_CLOSING_TAG,
+        QUERY_OPENING_TAG,
+        QUERY_CLOSING_TAG
     )
     
     #######################################
@@ -291,13 +325,48 @@ def run_qwen3_lm_or_vlm(
             ANSWER_OPENING_TAG,
             ANSWER_CLOSING_TAG
         )
-    elif decoder_profile == QUERY_TRANSLATOR_PROFILE:
-        translations = extract_matched_content(
+    elif decoder_profile == QUERY_REWRITER_PROFILE:
+        output_text = extract_query_rewriter_content(
             output_text,
-            TRANSLATION_OPENING_TAG,
-            TRANSLATION_CLOSING_TAG
+            KEYWORD_QUERIES_OPENING_TAG,
+            KEYWORD_QUERIES_CLOSING_TAG,
+            NATURAL_QUERIES_OPENING_TAG,
+            NATURAL_QUERIES_CLOSING_TAG,
+            HYDE_QUERIES_OPENING_TAG,
+            HYDE_QUERIES_CLOSING_TAG,
+            QUESTION_QUERIES_OPENING_TAG,
+            QUESTION_QUERIES_CLOSING_TAG,
+            RERANKER_QUERY_OPENING_TAG,
+            RERANKER_QUERY_CLOSING_TAG,
+            QUERY_OPENING_TAG,
+            QUERY_CLOSING_TAG
         )
-        output_text = translations[0] if translations else None
+    elif decoder_profile == LLM_JUDGE_PROFILE:
+        output_text = extract_llm_judge_content(
+            output_text,
+            ANSWERABILITY_OPENING_TAG,
+            ANSWERABILITY_CLOSING_TAG,
+            SUBQUERIES_OPENING_TAG,
+            SUBQUERIES_CLOSING_TAG,
+            SUBQUERY_OPENING_TAG,
+            SUBQUERY_CLOSING_TAG,
+            SUBQUERY_TEXT_OPENING_TAG,
+            SUBQUERY_TEXT_CLOSING_TAG,
+            SUBQUERY_ANSWERABILITY_OPENING_TAG,
+            SUBQUERY_ANSWERABILITY_CLOSING_TAG,
+            SUBQUERY_CONFIDENCE_OPENING_TAG,
+            SUBQUERY_CONFIDENCE_CLOSING_TAG,
+            SUBQUERY_SUPPORTING_CHUNK_IDS_OPENING_TAG,
+            SUBQUERY_SUPPORTING_CHUNK_IDS_CLOSING_TAG,
+            SUBQUERY_INSUFFICIENT_CHUNK_IDS_OPENING_TAG,
+            SUBQUERY_INSUFFICIENT_CHUNK_IDS_CLOSING_TAG,
+            SUBQUERY_RATIONALE_OPENING_TAG,
+            SUBQUERY_RATIONALE_CLOSING_TAG,
+            CHUNK_ID_OPENING_TAG,
+            CHUNK_ID_CLOSING_TAG,
+            DRAFT_ANSWER_OPENING_TAG,
+            DRAFT_ANSWER_CLOSING_TAG,
+        )
     else:
         print(f"run_qwen3_lm_or_vlm: unknown decoder_profile '{decoder_profile}'")
         output_text = None

@@ -1,6 +1,6 @@
 from config.general import modal_secret, rag_volume, VOLUME_PATH
 from config.modal_apps import CRAWLER_AGENT_APP_NAME, DECODER_APP_NAME, COLLECTION_HANDLER_APP_NAME
-from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME, CREATE_COLLECTIONS_FUNCTION_NAME
+from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME, CREATE_COLLECTIONS_FUNCTION_NAME, WRITE_BATCH_POINTS_FUNCTION_NAME
 from config.crawler_agent import (
     image,
     MODAL_TIMEOUT,
@@ -32,10 +32,10 @@ async def run_crawler_agent():
     from transformers import AutoTokenizer
     from helpers.crawler_agent import crawl, get_url_category
     from helpers.decoder import count_tokens
-    from helpers.openai_decoder import run_openai_data_cleaner
+    from helpers.openai_decoder import run_openai_llm
     from llama_index.core.node_parser import SentenceSplitter
     from config.decoder import MODEL_PROFILES as DECODER_MODEL_PROFILES, DATA_CLEANER_PROFILE, EMAIL_WRITER_PROFILE
-    from config.encoder import ENCODERS
+    from config.encoder import EMBEDDING_ENCODERS
     from config.crawler_agent import (
         START_URL,
         ADDITIONAL_URLS,
@@ -49,11 +49,13 @@ async def run_crawler_agent():
         JINA_FETCH_TIMEOUT,
         CRAWL_PRINT_ONLY,
         CHUNK_OVERLAP,
+        RUN_ENCODING,
         REUSE_CRAWL,
         REUSE_CRAWL_PAST_CURRENT_YEAR,
         REUSE_TIMESTAMP,
         RECREATE_QDRANT_COLLECTIONS,
         FILE_START,
+        CONFIGS_PATH,
         RAW_PATH,
         MANUALLY_CLEANED_PATH,
         RAW_CHUNKS_PATH,
@@ -156,10 +158,13 @@ async def run_crawler_agent():
                 # pop "max_chunk_size" (run_qwen3_lm_or_vlm would not expect it as model_config)
                 model_config.pop("max_chunk_size")
 
+                page_history_first_n = model_config.pop("page_history_first_n")
+                page_history_last_n = model_config.pop("page_history_last_n")
+
                 # get up to 20 chunks abstract, summary worth of context
                 sorted_indices = sorted(page_history.keys())
-                if len(sorted_indices) > 20:
-                    selected_indices = sorted_indices[:5] + sorted_indices[-15:]
+                if len(sorted_indices) > page_history_first_n + page_history_last_n:
+                    selected_indices = sorted_indices[:page_history_first_n] + sorted_indices[-page_history_last_n:]
                 else:
                     selected_indices = sorted_indices
                 if selected_indices:
@@ -188,7 +193,7 @@ async def run_crawler_agent():
                 try:
                     if model_config["provider"] == "openai":
                         lm_cleaned_content, prompt_text = await asyncio.to_thread(
-                            run_openai_data_cleaner,
+                            run_openai_llm,
                             current_turn_input_text=prompt,
                             system_prompt=model_config["system_prompt"],
                             model_name_or_path=model_config["model_name_or_path"],
@@ -197,6 +202,7 @@ async def run_crawler_agent():
                             # top_p=model_config["top_p"],
                             enable_thinking=model_config["enable_thinking"],
                             reasoning_effort=model_config["reasoning_effort"],
+                            decoder_profile=DATA_CLEANER_PROFILE,
                             return_prompt_text=model_config["return_prompt_text"],
                         )
                     else:
@@ -215,8 +221,12 @@ async def run_crawler_agent():
                 if DECODER_MODEL_PROFILES[DATA_CLEANER_PROFILE]["return_prompt_text"]:
                     print(f"{prompt_text}\n\n")
 
-                if lm_cleaned_content and len(lm_cleaned_content) == 5:
-                    abstract, summary, cleanedtext, questions, answers = lm_cleaned_content
+                if lm_cleaned_content:
+                    abstract = lm_cleaned_content["abstract"]
+                    summary = lm_cleaned_content["summary"]
+                    cleanedtext = lm_cleaned_content["cleanedtext"]
+                    questions = lm_cleaned_content["questions"]
+                    answers = lm_cleaned_content["answers"]
                     
                     # update abstracts, summaries, last cleaned_text (for context)
                     if abstract and summary:
@@ -300,17 +310,22 @@ async def run_crawler_agent():
         
         return local_results
 
-    # load encoder tokenizer of the model with the smallest max recommended input size
+    # load encoder tokenizer of the active model with the smallest max recommended input size
+    active_encoder_names = {
+        encoder_name
+        for variant_config in ENCODE_VARIANTS.values()
+        for encoder_name in variant_config["encoders"]
+    }
     encoder_sizes = {
-        name: config["max_recommended_input_size"]
-        for name, config in ENCODERS.items()
-        if "max_recommended_input_size" in config
+        encoder_name: EMBEDDING_ENCODERS[encoder_name]["max_recommended_input_size"]
+        for encoder_name in active_encoder_names
+        if encoder_name in EMBEDDING_ENCODERS and "max_recommended_input_size" in EMBEDDING_ENCODERS[encoder_name]
     }
     if not encoder_sizes:
-        print("run_crawler_agent: no encoder max_recommended_input_size found")
+        print("run_crawler_agent: no active encoder max_recommended_input_size found")
         return
     chunking_encoder = min(encoder_sizes, key=encoder_sizes.get)
-    encoder_path = ENCODERS[chunking_encoder]["model_name"]
+    encoder_path = EMBEDDING_ENCODERS[chunking_encoder]["model_name"]
     decoder_path = DECODER_MODEL_PROFILES[EMAIL_WRITER_PROFILE]["model_name_or_path"]
     encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_path, trust_remote_code=True)
     decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_path, trust_remote_code=True)
@@ -352,33 +367,37 @@ async def run_crawler_agent():
     variants_to_encode = {}
     encode_timestamp = None
     current_year = datetime.datetime.now().year
-    if not ENCODE_VARIANTS:
-        print("run_crawler_agent: ENCODE_VARIANTS is empty")
+    if REUSE_CRAWL and not RUN_ENCODING:
+        print("run_crawler_agent: REUSE_CRAWL=True and RUN_ENCODING=False is an invalid configuration")
+        return
+    if RUN_ENCODING and not ENCODE_VARIANTS:
+        print("run_crawler_agent: RUN_ENCODING is enabled but ENCODE_VARIANTS is empty")
         return
     variant_paths = {}
-    for variant in ENCODE_VARIANTS.keys():
-        if variant == "raw_chunks":
-            variant_paths[variant] = RAW_CHUNKS_PATH
-        elif variant == "manually_cleaned_chunks":
-            variant_paths[variant] = MANUALLY_CLEANED_CHUNKS_PATH
-        elif variant == "lm_cleaned_text_chunks":
-            variant_paths[variant] = LM_CLEANED_TEXT_CHUNKS_PATH
-        elif variant == "lm_abstract_chunks":
-            variant_paths[variant] = LM_ABSTRACT_CHUNKS_PATH
-        elif variant == "lm_summary_chunks":
-            variant_paths[variant] = LM_SUMMARY_CHUNKS_PATH
-        elif variant == "lm_q_and_a_chunks":
-            variant_paths[variant] = LM_Q_AND_A_CHUNKS_PATH
-        elif variant == "lm_q_and_a_for_q_only_chunks":
-            variant_paths[variant] = LM_Q_AND_A_CHUNKS_PATH
-        else:
-            print(f"run_crawler_agent: invalid ENCODE_VARIANTS entry '{variant}'")
-            return
+    if RUN_ENCODING or REUSE_CRAWL:
+        for variant in ENCODE_VARIANTS.keys():
+            if variant == "raw_chunks":
+                variant_paths[variant] = RAW_CHUNKS_PATH
+            elif variant == "manually_cleaned_chunks":
+                variant_paths[variant] = MANUALLY_CLEANED_CHUNKS_PATH
+            elif variant == "lm_cleaned_text_chunks":
+                variant_paths[variant] = LM_CLEANED_TEXT_CHUNKS_PATH
+            elif variant == "lm_abstract_chunks":
+                variant_paths[variant] = LM_ABSTRACT_CHUNKS_PATH
+            elif variant == "lm_summary_chunks":
+                variant_paths[variant] = LM_SUMMARY_CHUNKS_PATH
+            elif variant == "lm_q_and_a_chunks":
+                variant_paths[variant] = LM_Q_AND_A_CHUNKS_PATH
+            elif variant == "lm_q_and_a_for_q_only_chunks":
+                variant_paths[variant] = LM_Q_AND_A_CHUNKS_PATH
+            else:
+                print(f"run_crawler_agent: invalid ENCODE_VARIANTS entry '{variant}'")
+                return
 
     reuse_crawl = REUSE_CRAWL
     if CRAWL_PRINT_ONLY and reuse_crawl:
-        print("run_crawler_agent: CRAWL_PRINT_ONLY is enabled, forcing REUSE_CRAWL=False")
-        reuse_crawl = False
+        print("run_crawler_agent: CRAWL_PRINT_ONLY=True and REUSE_CRAWL=True is an invalid configuration")
+        return
 
     if reuse_crawl:
         reuse_timestamp = str(REUSE_TIMESTAMP).strip() if REUSE_TIMESTAMP else ""
@@ -584,7 +603,7 @@ async def run_crawler_agent():
                         max_token_lengths["lm_cleaned"]["q_and_a"]["encoder"] = pair["encoder_token_count"]
         
         # store all versions (raw, manually cleaned, lm cleaned, unchuncked and chunked) on file
-        for path in [RAW_PATH, MANUALLY_CLEANED_PATH, RAW_CHUNKS_PATH, MANUALLY_CLEANED_CHUNKS_PATH,
+        for path in [CONFIGS_PATH, RAW_PATH, MANUALLY_CLEANED_PATH, RAW_CHUNKS_PATH, MANUALLY_CLEANED_CHUNKS_PATH,
                     LM_CLEANED_TEXT_CHUNKS_PATH, LM_ABSTRACT_CHUNKS_PATH, LM_SUMMARY_CHUNKS_PATH, LM_Q_AND_A_CHUNKS_PATH]:
             os.makedirs(path, exist_ok=True)
 
@@ -593,6 +612,9 @@ async def run_crawler_agent():
         encode_timestamp = timestamp
 
         files = {
+            "config": {
+                "json": os.path.join(CONFIGS_PATH, f"{FILE_START}{timestamp}.json")
+            },
             "raw": {
                 "json": os.path.join(RAW_PATH, f"{FILE_START}{timestamp}.jsonl"),
                 "txt": os.path.join(RAW_PATH, f"{FILE_START}{timestamp}.txt")
@@ -628,6 +650,13 @@ async def run_crawler_agent():
         }
 
         try:
+            with open(files["config"]["json"], "w", encoding="utf-8") as f_config_json:
+                json.dump({
+                    "timestamp": timestamp,
+                    "data_cleaner_profile_name": DATA_CLEANER_PROFILE,
+                    "data_cleaner_profile": DECODER_MODEL_PROFILES[DATA_CLEANER_PROFILE],
+                }, f_config_json, ensure_ascii=False, indent=2)
+
             # https://modal.com/docs/reference/modal.Volume
             with open(files["raw"]["json"], "w", encoding="utf-8") as f_raw_json, \
                 open(files["raw"]["txt"], "w", encoding="utf-8") as f_raw_txt, \
@@ -666,6 +695,10 @@ async def run_crawler_agent():
         except Exception as e:
             print(f"run_crawler_agent: error saving files: {e}")
 
+        if not RUN_ENCODING:
+            print("run_crawler_agent: RUN_ENCODING is disabled, stopping after crawl and cleanup")
+            return
+
         # select variants to encode
         if "raw_chunks" in ENCODE_VARIANTS:
             variants_to_encode["raw_chunks"] = raw_chunks
@@ -681,6 +714,10 @@ async def run_crawler_agent():
             variants_to_encode["lm_q_and_a_chunks"] = lm_q_and_a_chunks
         if "lm_q_and_a_for_q_only_chunks" in ENCODE_VARIANTS:
             variants_to_encode["lm_q_and_a_for_q_only_chunks"] = lm_q_and_a_chunks
+
+    if not RUN_ENCODING:
+        print("run_crawler_agent: RUN_ENCODING is disabled")
+        return
 
     if not variants_to_encode:
         print("run_crawler_agent: no variants selected to encode")
@@ -810,14 +847,70 @@ async def run_crawler_agent():
         rag_volume.commit()
         print("run_crawler_agent: volume committed")
 
-    encode_file_paths = {
-        "raw_chunks": RAW_CHUNKS_PATH,
-        "manually_cleaned_chunks": MANUALLY_CLEANED_CHUNKS_PATH,
-        "lm_cleaned_text_chunks": LM_CLEANED_TEXT_SUBCHUNKS_PATH,
-        "lm_summary_chunks": LM_SUMMARY_SUBCHUNKS_PATH,
-        "lm_q_and_a_chunks": LM_Q_AND_A_VALID_CHUNKS_PATH,
-        "lm_q_and_a_for_q_only_chunks": LM_Q_AND_A_FOR_Q_ONLY_VALID_CHUNKS_PATH,
-    }
+    def prepare_batches_for_variant(variant, records, batch_size):
+        batches = []
+        current_batch = {
+            "texts": [],
+            "payloads": [],
+            "point_ids": [],
+        }
+        next_point_id = 0
+
+        for record in records:
+            if variant in ["lm_q_and_a_chunks", "lm_q_and_a_for_q_only_chunks"]:
+                for pair_index, pair in enumerate(record["pairs"], start=1):
+                    if variant == "lm_q_and_a_chunks":
+                        text = f"Q: {pair['question']}\nA: {pair['answer']}"
+                    else:
+                        text = pair["question"]
+
+                    payload = {
+                        **record,
+                        "variant": variant,
+                        "timestamp": encode_timestamp,
+                    }
+                    payload.pop("pairs", None)
+                    payload.update({
+                        "pair_index": pair_index,
+                        "question": pair["question"],
+                        "answer": pair["answer"],
+                        "decoder_token_count": pair["decoder_token_count"],
+                        "encoder_token_count": pair["encoder_token_count"],
+                    })
+
+                    current_batch["texts"].append(text)
+                    current_batch["payloads"].append(payload)
+                    current_batch["point_ids"].append(next_point_id)
+                    next_point_id += 1
+
+                    if len(current_batch["texts"]) == batch_size:
+                        batches.append(current_batch)
+                        current_batch = {
+                            "texts": [],
+                            "payloads": [],
+                            "point_ids": [],
+                        }
+            else:
+                current_batch["texts"].append(record["text"])
+                current_batch["payloads"].append({
+                    **record,
+                    "variant": variant,
+                    "timestamp": encode_timestamp,
+                })
+                current_batch["point_ids"].append(next_point_id)
+                next_point_id += 1
+
+                if len(current_batch["texts"]) == batch_size:
+                    batches.append(current_batch)
+                    current_batch = {
+                        "texts": [],
+                        "payloads": [],
+                        "point_ids": [],
+                    }
+
+        if current_batch["texts"]:
+            batches.append(current_batch)
+        return batches
 
     # create collection
     encoder_functions = {}
@@ -826,29 +919,35 @@ async def run_crawler_agent():
     except Exception as e:
         print(f"run_crawler_agent: failed to find {COLLECTION_HANDLER_APP_NAME}.{CREATE_COLLECTIONS_FUNCTION_NAME}. Is it deployed? Error: {e}")
         return
-    await create_collections.remote.aio(list(variants_to_encode.keys()), RECREATE_QDRANT_COLLECTIONS)
+    create_collections.remote(list(variants_to_encode.keys()), RECREATE_QDRANT_COLLECTIONS)
+    try:
+        write_batch_points = modal.Function.from_name(COLLECTION_HANDLER_APP_NAME, WRITE_BATCH_POINTS_FUNCTION_NAME)
+    except Exception as e:
+        print(f"run_crawler_agent: failed to find {COLLECTION_HANDLER_APP_NAME}.{WRITE_BATCH_POINTS_FUNCTION_NAME}. Is it deployed? Error: {e}")
+        return
 
-    variant_total_records = {}
-    for variant in variants_to_encode.keys():
-        file_path = os.path.join(encode_file_paths[variant], f"{FILE_START}{encode_timestamp}.jsonl")
-        if not os.path.exists(file_path):
-            print(f"run_crawler_agent: missing encode file '{file_path}'")
-            return
-        with open(file_path, "r", encoding="utf-8") as f:
-            variant_total_records[variant] = sum(1 for line in f if line.strip())
-
-    encoder_to_variant_tasks = {}
-    for variant in variants_to_encode.keys():
+    variant_and_size_to_prepared_batches = {}
+    encoder_to_batch_jobs = {}
+    for variant, records in variants_to_encode.items():
         variant_config = ENCODE_VARIANTS[variant]
         first_encoder_name = list(variant_config["encoders"].keys())[0]
         for encoder_name, encoder_config_for_variant in variant_config["encoders"].items():
-            if encoder_name not in encoder_to_variant_tasks:
-                encoder_to_variant_tasks[encoder_name] = []
+            batch_size = encoder_config_for_variant["batch_size"]
+            variant_and_size = (variant, batch_size)
+            if variant_and_size not in variant_and_size_to_prepared_batches:
+                variant_and_size_to_prepared_batches[variant_and_size] = prepare_batches_for_variant(
+                    variant=variant,
+                    records=records,
+                    batch_size=batch_size,
+                )
+            if encoder_name not in encoder_to_batch_jobs:
+                encoder_to_batch_jobs[encoder_name] = []
             upsert_or_update = "upsert" if encoder_name == first_encoder_name else "update"
-            encoder_to_variant_tasks[encoder_name].append((variant, encoder_config_for_variant["batch_size"], upsert_or_update))
+            for batch in variant_and_size_to_prepared_batches[variant_and_size]:
+                encoder_to_batch_jobs[encoder_name].append((variant, batch, upsert_or_update))
 
-    for encoder_name, variant_tasks in encoder_to_variant_tasks.items():
-        encoder_config = ENCODERS[encoder_name]
+    for encoder_name, batch_jobs in encoder_to_batch_jobs.items():
+        encoder_config = EMBEDDING_ENCODERS[encoder_name]
         service_name = encoder_config["service"]
         function_name = encoder_config["function"]
         service_key = (service_name, function_name)
@@ -859,21 +958,13 @@ async def run_crawler_agent():
                 print(f"run_crawler_agent: failed to find {service_name}.{function_name}. Is it deployed? Error: {e}")
                 return
         run_encoder = encoder_functions[service_key]
-
-        async def run_variant_batches(variant, batch_size, upsert_or_update):
-            total_records = variant_total_records[variant]
-            for start in range(0, total_records, batch_size):
-                await run_encoder.remote.aio(
-                    variant,
-                    encode_timestamp,
-                    start,
-                    batch_size,
-                    encoder_name,
-                    upsert_or_update
-                )
-        for variant, batch_size, upsert_or_update in variant_tasks:
-            await run_variant_batches(variant, batch_size, upsert_or_update)
-            print(f"run_crawler_agent: completed encoder '{encoder_name}' for variant '{variant}'")
+        embeddings_by_batch = await asyncio.gather(*[
+            run_encoder.remote.aio(variant, batch, encoder_name)
+            for variant, batch, _ in batch_jobs
+        ])
+        for (variant, batch, upsert_or_update), embeddings in zip(batch_jobs, embeddings_by_batch):
+            write_batch_points.remote(variant, batch, encoder_name, embeddings, upsert_or_update)
+        print(f"run_crawler_agent: completed encoder '{encoder_name}'")
 
     print("run_crawler_agent: encoder dispatch complete")
 
