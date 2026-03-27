@@ -46,9 +46,27 @@ KEYWORD_QUERIES_OPENING_TAG = "<keywordqueries>"
 KEYWORD_QUERIES_CLOSING_TAG = "</keywordqueries>"
 NATURAL_QUERIES_OPENING_TAG = "<naturalqueries>"
 NATURAL_QUERIES_CLOSING_TAG = "</naturalqueries>"
+HYDE_QUERIES_OPENING_TAG = "<hydequeries>"
+HYDE_QUERIES_CLOSING_TAG = "</hydequeries>"
 QUESTION_QUERIES_OPENING_TAG = "<questionqueries>"
 QUESTION_QUERIES_CLOSING_TAG = "</questionqueries>"
-QUERY_REWRITER_MAX_QUERIES = 18
+RERANKER_QUERY_OPENING_TAG = "<rerankerquery>"
+RERANKER_QUERY_CLOSING_TAG = "</rerankerquery>"
+QUERY_REWRITER_SECTION_TO_MAX_QUERIES = {
+    "keyword": 8,
+    "natural": 8,
+    "hyde": 8,
+    "question": 8,
+}
+QUERY_REWRITER_TEMPERATURE = 0.1
+QUERY_REWRITER_TEMPERATURE_TAG = str(QUERY_REWRITER_TEMPERATURE).replace(".", "p")
+QUERY_REWRITER_CACHE_TAG = (
+    f"kw{QUERY_REWRITER_SECTION_TO_MAX_QUERIES['keyword']}"
+    f"_nat{QUERY_REWRITER_SECTION_TO_MAX_QUERIES['natural']}"
+    f"_hyde{QUERY_REWRITER_SECTION_TO_MAX_QUERIES['hyde']}"
+    f"_q{QUERY_REWRITER_SECTION_TO_MAX_QUERIES['question']}"
+    f"_temp{QUERY_REWRITER_TEMPERATURE_TAG}"
+)
 OLD_MUIA_SUBJECT_AND_SEMINAR_CODE_MAPPING_TEXT = (
     "S1: Metodología de la investigación | Research Methodology\n"
     "S2: Gestión de proyectos y análisis de riesgos | Project Management and Risk Analysis\n"
@@ -98,6 +116,30 @@ SCORES_OPENING_TAG = "<scores>"
 SCORES_CLOSING_TAG = "</scores>"
 SCORE_OPENING_TAG = "<score>"
 SCORE_CLOSING_TAG = "</score>"
+ANSWERABILITY_OPENING_TAG = "<answerability>"
+ANSWERABILITY_CLOSING_TAG = "</answerability>"
+SUBQUERIES_OPENING_TAG = "<subqueries>"
+SUBQUERIES_CLOSING_TAG = "</subqueries>"
+SUBQUERY_OPENING_TAG = "<subquery>"
+SUBQUERY_CLOSING_TAG = "</subquery>"
+SUBQUERY_TEXT_OPENING_TAG = "<subquerytext>"
+SUBQUERY_TEXT_CLOSING_TAG = "</subquerytext>"
+SUBQUERY_ANSWERABILITY_OPENING_TAG = "<subqueryanswerability>"
+SUBQUERY_ANSWERABILITY_CLOSING_TAG = "</subqueryanswerability>"
+SUBQUERY_CONFIDENCE_OPENING_TAG = "<subqueryconfidence>"
+SUBQUERY_CONFIDENCE_CLOSING_TAG = "</subqueryconfidence>"
+SUBQUERY_SUPPORTING_CHUNK_IDS_OPENING_TAG = "<subquerysupportingchunkids>"
+SUBQUERY_SUPPORTING_CHUNK_IDS_CLOSING_TAG = "</subquerysupportingchunkids>"
+SUBQUERY_INSUFFICIENT_CHUNK_IDS_OPENING_TAG = "<subqueryinsufficientchunkids>"
+SUBQUERY_INSUFFICIENT_CHUNK_IDS_CLOSING_TAG = "</subqueryinsufficientchunkids>"
+SUBQUERY_RATIONALE_OPENING_TAG = "<subqueryrationale>"
+SUBQUERY_RATIONALE_CLOSING_TAG = "</subqueryrationale>"
+CHUNK_ID_OPENING_TAG = "<chunkid>"
+CHUNK_ID_CLOSING_TAG = "</chunkid>"
+DRAFT_ANSWER_OPENING_TAG = "<draftanswer>"
+DRAFT_ANSWER_CLOSING_TAG = "</draftanswer>"
+RATIONALE_OPENING_TAG = "<rationale>"
+RATIONALE_CLOSING_TAG = "</rationale>"
 Q_AND_A_MAX_PAIRS = 20
 NON_MUIA_TITULOS_PROPIOS = [
     "Máster en Fundamentos y Aplicaciones de la Inteligencia Artificial",
@@ -139,6 +181,54 @@ THREAD_GROUPER_PROFILE = "thread_grouper"
 DATA_CLEANER_PROFILE = "data_cleaner"
 QUERY_REWRITER_PROFILE = "query_rewriter"
 LLM_JUDGE_PROFILE = "llm_judge"
+
+DATA_CLEANER_PROVIDER = "local"
+DATA_CLEANER_PROVIDER_TO_SETTINGS = {
+    "local": {
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": True,
+        "reasoning_effort": "minimal",
+        "page_history_first_n": 5,
+        "page_history_last_n": 15,
+        "max_chunk_size": 1024,
+    },
+    "openai": {
+        "provider": "openai",
+        "model_name_or_path": "gpt-5-nano",
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+        "page_history_first_n": 2,
+        "page_history_last_n": 4,
+        "max_chunk_size": 2048,
+    },
+}
+DATA_CLEANER_SETTINGS = DATA_CLEANER_PROVIDER_TO_SETTINGS[DATA_CLEANER_PROVIDER]
+
+LLM_JUDGE_PROVIDER = "openai"
+LLM_JUDGE_PROVIDER_TO_SETTINGS = {
+    "local": {
+        "provider": "local",
+        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "enable_thinking": True,
+        "reasoning_effort": "minimal",
+        "max_new_tokens": 4096,
+        "temperature": 0.3,
+        "top_p": 0.8,
+        "top_k": 20,
+    },
+    "openai": {
+        "provider": "openai",
+        "model_name_or_path": "gpt-5.4-mini",
+        "enable_thinking": True,
+        "reasoning_effort": "medium",
+        "max_new_tokens": 8192,
+        "temperature": 0.3,
+        "top_p": 0.8,
+        "top_k": 20,
+    },
+}
+LLM_JUDGE_SETTINGS = LLM_JUDGE_PROVIDER_TO_SETTINGS[LLM_JUDGE_PROVIDER]
 
 DIRECTOR_EMAIL = "masteria.dia@fi.upm.es"
 DIRECTOR_NAME = "Damiano Zanardini"
@@ -352,18 +442,20 @@ MODEL_PROFILES = {
         "return_prompt_text": True
     },
     DATA_CLEANER_PROFILE: {
-        "provider": "local", # local or openai
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8", # gpt-5-mini or Qwen/Qwen3-8B-FP8
-        "enable_thinking": True,
-        "reasoning_effort": "minimal",
+        "provider": DATA_CLEANER_SETTINGS["provider"],
+        "model_name_or_path": DATA_CLEANER_SETTINGS["model_name_or_path"],
+        "enable_thinking": DATA_CLEANER_SETTINGS["enable_thinking"],
+        "reasoning_effort": DATA_CLEANER_SETTINGS["reasoning_effort"],
         "is_vision_model": False,
+        "page_history_first_n": DATA_CLEANER_SETTINGS["page_history_first_n"],
+        "page_history_last_n": DATA_CLEANER_SETTINGS["page_history_last_n"],
         "system_prompt": (
             "You are an expert Knowledge Curator for RAG."
         ),
         "prompt_template": (
             "Your job is to take source texts and convert them into four outputs: cleaned text, abstract, summary, and Q&A pairs.\n"
             "To help you do this well, the following instructions explain the wider product that this knowledge-curation step supports.\n\n"
-            "This data will be used by a retrieval system for current and prospective students interested in MUIA (Master's Degree in Artificial Intelligence) at UPM, coordinated by the Department of Artificial Intelligence (DIA) at FI-UPM.\n"
+            "This data will be used by a retrieval system for current and prospective students interested in MUIA (Master's Degree in Artificial Intelligence), coordinated by the Department of Artificial Intelligence (DIA) at FI-UPM.\n"
             "UPM offers many degrees, master's programs, and PhD programs. FI-UPM also offers several different informatics-related degrees, master's programs, and PhD programs. The Department of Artificial Intelligence also appears in contexts that are not only about MUIA.\n"
             "Because of that, scope and contextualization are critical, especially in Q&A pairs.\n"
             "Do not confuse MUIA with other UPM programs.\n"
@@ -374,7 +466,7 @@ MODEL_PROFILES = {
             f"This matters because many chunks include numbers (prices, credits, dates, requirements), and those facts are only correct when tied to the right scope ({SOURCE_CATEGORY_TEXT}).\n"
             "For each chunk, you must produce four outputs: cleaned text, abstract, summary, and Q&A pairs.\n\n"
             "### CONTEXTUAL INFORMATION:\n"
-            "1. You will receive 'Page History' containing abstracts and summaries from previous chunks. Each entry includes its **Chunk Index** so you can determine its position in the document. **Note**: This history may be non-consecutive (e.g., Chunks 0-4 to provide you with beginning-of-document context followed by Chunks 35-40 to provide you with latest-chunks context).\n"
+            "1. You will receive 'Page History' containing abstracts and summaries from previous chunks. Each entry includes its **Chunk Index** so you can determine its position in the document. **Note**: This history may be non-consecutive (e.g., Chunks 0-4 to provide you with beginning-of-document context followed by Chunks 35-39 to provide you with latest-chunks context).\n"
             "2. You will receive the 'Previous Chunk Cleaned Text' to ensure grammatical continuity with the current input (for example, a question or link might have been cut off and this may give you the chance to reconstruct it).\n\n"
             "### GENERAL INSTRUCTIONS:\n"
             "1. Write all outputs in English, regardless of the source language.\n"
@@ -493,7 +585,7 @@ MODEL_PROFILES = {
             "**Input Text**:\n{text}\n\n"
             "**Output**:\n"
         ),
-        "max_chunk_size": 1024,
+        "max_chunk_size": DATA_CLEANER_SETTINGS["max_chunk_size"],
         "max_new_tokens": 8192,
         "temperature": 0.1,
         "top_p": 0.8,
@@ -503,42 +595,68 @@ MODEL_PROFILES = {
     },
     QUERY_REWRITER_PROFILE: {
         "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        "model_name_or_path": "Qwen/Qwen3-14B-FP8",
         "enable_thinking": True,
         "is_vision_model": False,
         "system_prompt": (
             "You are an expert at generating retrieval queries."
         ),
         "prompt_template": (
-            f"Your task is to generate up to {QUERY_REWRITER_MAX_QUERIES} retrieval queries for the following email.\n"
+            "Your task is to generate retrieval queries and one reranker query for the following email.\n"
             "The goal is to maximize the chances of retrieving similar and useful chunks from a knowledge base.\n\n"
             "### KNOWLEDGE BASE CONTEXT:\n"
-            "The knowledge base was built by crawling webpages mainly related to the Master Universitario en Inteligencia Artificial, "
-            "the Department of Artificial Intelligence, the Facultad or Escuela that hosts the program, and Universidad Politecnica de Madrid. "
-            "Those webpages were chunked. Another language model then cleaned the chunks, translated most content into English, generated summaries, "
-            "and generated question-answer pairs. Because of this pipeline, the knowledge base may contain English cleaned text, English summaries with explicit entities, "
-            "question-like text, and occasional mixed English and Spanish entity names.\n\n"
+            "You are part of a system that is meant to answer emails for the Master Universitario en Inteligencia Artificial (MUIA). The knowledge base was built by starting from webpages about that master's program and then following links into the Department of Artificial Intelligence, Escuela Técnica Superior de Ingenieros Informáticos (the school that hosts the program), and Universidad Politecnica de Madrid. "
+            "Because of that, MUIA is the default scope of the system and of the emails. Department, school, and university content is additional scope that becomes relevant only when the email explicitly goes beyond the default MUIA context, for example by mentioning another program, or a broader university-level procedure. "
+            "It mostly contains public academic and administrative information such as admissions, enrollment, tuition and payment procedures, scholarships, mobility and Erasmus information, schedules, subjects and seminars, TFM (master's thesis) rules and procedures, awards and honors, forms, deadlines, responsible offices, and contact points. It does not contain day-to-day internal case tracking, student-specific progress updates, or one-off operational follow-ups, and it is refreshed yearly rather than continuously. "
+            "Those webpages were chunked. Another language model then cleaned the chunks, translated the content into English, generated summaries, "
+            "and generated question-answer pairs. The resulting knowledge base contains three main collection types: cleaned text, summaries with explicit entities, and question-answer style text. "
+            "That text is in English. The only recurring exception is that some key named entities appear in some chunks in Spanish and in other chunks in English, because the cleaning model sometimes kept those names in the original language instead of translating them. "
+            "This happens with entities such as 'Matrícula de Honor', subject or seminar names, school names, office names, and some acronyms. It does not apply to ordinary descriptive words such as 'certificado', 'admisión', or 'participación'.\n\n"
+            "### RETRIEVAL CONTEXT AND RULES:\n"
             "Retrieval uses several encoders, including sparse frequency-based encoders and dense encoders. Long emails often contain many words that are not useful for retrieval. "
             "Because of this, generate a mix of query styles: some very short keyword-focused queries for sparse frequency-based encoders, some clear natural-language queries for dense encoders, "
-            "and some queries written as questions to match question-answer pairs in the knowledge base. Write the queries in English, because that is the main language of the knowledge base. "
-            "However, because the cleaner model sometimes kept entity names in Spanish instead of translating them, generate additional English queries where only the relevant entity remains in Spanish while the rest of the query stays in English.\n\n"
-            "### CURRENT SUBJECT AND SEMINAR CODE MAPPING:\n"
+            "some HYDE-style queries that look like a short hypothetical answer or document snippet that would ideally answer the email, and some queries written as questions to match question-answer pairs in the knowledge base. This also applies to keyword queries: keep the rest of every keyword query in English, and switch only the named entity itself between English and Spanish when the knowledge-base rule above explicitly allows it. KEYWORD QUERIES ARE NOT SPANISH NOUN LISTS. DO NOT let one Spanish keyword cause the whole keyword query to switch into Spanish. "
+            "Natural queries must not be written as questions. Write them as natural-language search formulations or concise declarative retrieval requests, without a question mark. "
+            "For HYDE-style queries, do not write generic abstractions such as 'the subject requires specific prior knowledge'. Instead, write short answer-shaped snippets that look like plausible document text we would hope to retrieve. "
+            "HYDE queries should be more document-like and more instance-level than natural queries: include plausible concrete details, concepts, requirements, or outcomes that a real matching chunk might contain. "
+            "Generate multiple different plausible hypotheses when appropriate, because only some of them may match the real document. "
+            "Avoid meta-document formulations such as 'the course guide explains...', 'the evaluation section states...', or 'the page contains information about...'. Prefer direct candidate answers instead. "
+            "Do not hedge HYDE queries with formulations such as 'may require', 'would depend on', or 'should identify'. Write them as if they were short snippets copied from a matching chunk. "
+            "However, do not invent unsupported administrative facts such as exact dates, deadlines, official procedures, prices, document names, grades, or people. It is acceptable to hypothesize plausible domain concepts for an academic topic when the email strongly suggests them, and it is always acceptable to restate concrete facts that already appear in the email.\n\n"
+            "### SUBJECT AND SEMINAR MAPPING RULES:\n"
             "The following is the current best mapping we have between subject and seminar codes and subject and seminar names in Spanish and English. "
             "We provide this mapping because people usually mention the subject or seminar name in an email, not the code, but the cleaner model sometimes kept the Spanish name, "
-            "sometimes translated the name into English, and sometimes replaced the name with the code. If the email is not about a concrete subject or seminar that appears in this mapping, ignore this mapping completely. "
-            "Do not use it for overall program-level mentions such as a master's program name, and do not use it just because some words overlap with a subject or seminar name. "
-            "If the email explicitly mentions a concrete subject or seminar and the mapping suggests a code, generate one English query with the name in English, one English query where that entity remains in Spanish, and one English query that uses the code instead of the subject or seminar name.\n"
+            "sometimes translated the name into English, and sometimes replaced the name with the code. Use this mapping only when the email is clearly about a specific subject or seminar that appears in this mapping. "
+            "If the email is about the master's program in general, ignore this mapping completely. Also ignore it when the email merely contains words that happen to overlap with part of a subject or seminar name. "
+            "If the email explicitly mentions a concrete subject or seminar and the mapping suggests a code, generate queries using only these two routes: the English name together with the code, and the Spanish name together with the code. HARD RULE: NEVER generate a code-only query. NEVER write a seminar or subject code such as S1, S2, A4, or S16 by itself without the corresponding subject or seminar name. If a generated query contains only the code, that query is WRONG and must be rewritten.\n"
             f"{OLD_MUIA_SUBJECT_AND_SEMINAR_CODE_MAPPING_TEXT}\n\n"
-            "### WHAT TO DO:\n"
-            "1. Prioritize the main administrative or academic request in the email.\n"
-            "2. If the email contains multiple distinct requests, generate queries for the different requests.\n"
-            "3. Remove greetings, signatures, politeness filler, and irrelevant conversational text.\n"
-            "4. Queries are used as-is against a knowledge base that can contain other programs, departments, and university entities. Do not use vague references such as 'this master's', 'the program', or 'that subject'. Name the concrete program, degree, subject, seminar, faculty, department, procedure, URL, date, number, or person when relevant.\n"
-            "5. For each query, include only the entities that help identify the target content. Do not include an entity just because it appears in the email.\n"
-            "6. Make the queries specific and self-contained.\n"
-            f"7. Output up to {QUERY_REWRITER_MAX_QUERIES} queries.\n\n"
+            "### ADDITIONAL RULES:\n"
+            "- Prioritize the main administrative or academic request in the email.\n"
+            "- Anchor the queries on what is being asked now, in the latest state of the email. If quoted or forwarded text provides necessary background to understand the current request, use that background too, but do not let stale earlier details take over the queries.\n"
+            "- If the email contains multiple distinct requests, generate queries for the different requests.\n"
+            "- If an email asks for different facts such as prerequisites, final exam, schedule, credits, deadline, or contact, prefer separate queries when combining them would make the query too specific or would require a single chunk to contain all the facts. It is still acceptable to combine related facts when they are likely to appear together in the same chunk.\n"
+            "- Remove greetings, signatures, politeness filler, and irrelevant conversational text.\n"
+            "- Queries are used as-is against a knowledge base that can contain other programs, departments, and university entities. Do not use vague references such as 'this master's', 'the program', or 'that subject'. Make the query concrete through the actual subject, seminar, office, procedure, URL, professor or staff name, or external program or university explicitly mentioned in the email. HARD RULE: NEVER use dates, years, long numbers, student names, applicant names, or generic person references to make the query concrete.\n"
+            "- Treat the following as the default context of the email system: the Master Universitario en Inteligencia Artificial, the Department of Artificial Intelligence, Escuela Técnica Superior de Ingenieros Informáticos, and Universidad Politécnica de Madrid. NEVER mention any of those default names in the query. This ban also includes shorthand or translated forms such as MUIA, MIA, Master in Artificial Intelligence, UPM, ETSIINF, or the default department name in English or Spanish. If a query mentions one of those default names without an explicit contrast with another named program or institution, that query is WRONG and must be rewritten. Reason: those default names appear across many chunks in the knowledge base, so mentioning them can create easy but low-value matches that are about the right institution but not about the real issue in the email.\n"
+            "- If the email explicitly contrasts the default MUIA context with another named program, department, school, or university, mention the external entity that creates that contrast and keep the default MUIA context implicit. Reason: the external entity is what disambiguates retrieval. For example, a mobility case should produce both some queries about a mobility program with an external university and some queries with the explicit external university name. Reason: if a mobility agreement with that university exists, the university name may appear in the knowledge base, but if it does not, the more general mobility-program wording still has a chance to retrieve the relevant procedure.\n"
+            "- When the email includes an acronym, abbreviation, or short code together with its meaning, diversify across forms. Do not let all queries depend on the acronym alone. Prefer a mix where some queries use the expanded meaning, some use both the acronym and the expanded meaning, and only a minority rely on the acronym by itself.\n"
+            "- Make the queries specific and self-contained.\n"
+            "- Question queries should usually sound like broad, natural student questions that directly ask for the needed information. Prefer formulations such as 'what', 'how', or 'which' over generating many narrow yes/no variants. Use more specific yes/no questions only for a minority of the question queries when they seem especially useful.\n"
+            "- Prefer queries about the underlying policy, procedure, requirement, approval rule, eligibility criterion, responsible office, or document type, rather than incidental case-specific details that are unlikely to appear in the knowledge base.\n"
+            "- Avoid centering queries on details such as paper titles, conference names, journal names, exact acceptance dates, exact submission dates, or one-off filenames unless the email is explicitly asking where to find that exact item.\n"
+            "- Do not use vague placeholders such as 'case', 'issue', 'matter', 'request', or 'situation' as if they were identifying retrieval terms. The queries are used as-is, and the knowledge base contains yearly refreshed public information, not day-to-day internal case updates. So a query such as 'updates to the situation' is bad twice: it is vague, and it is asking for a type of information the knowledge base does not contain.\n"
+            "- When an email describes a very specific case, try to abstract it to the more general administrative or academic question that would govern the answer.\n"
+            "- Natural queries must not be written as questions. Write them as natural-language search formulations or concise declarative retrieval requests, without a question mark.\n"
+            "- Example for a TFM award email that mentions a specific conference acceptance:\n"
+            "  Bad query: 'Computing in Cardiology 2024 accepted paper June 25'\n"
+            "  Better queries: 'TFM matrícula de honor publication acceptance requirement', 'best TFM award publication criteria accepted before deadline', 'TFM prize eligibility accepted publication evidence'\n"
+            f"- Output retrieval queries in all four categories: keyword, natural, hyde, and question. Try to output exactly this many queries per category: keyword = {QUERY_REWRITER_SECTION_TO_MAX_QUERIES['keyword']}, natural = {QUERY_REWRITER_SECTION_TO_MAX_QUERIES['natural']}, hyde = {QUERY_REWRITER_SECTION_TO_MAX_QUERIES['hyde']}, question = {QUERY_REWRITER_SECTION_TO_MAX_QUERIES['question']}. If it is genuinely difficult to reach the target for a category without producing low-quality duplicates, you may output fewer for that category. Do not exceed these counts, and do not skip a category just because you think another one is better.\n"
+            f"- Also output exactly one reranker query inside {RERANKER_QUERY_OPENING_TAG} and {RERANKER_QUERY_CLOSING_TAG} tags.\n"
+            "- The reranker query should be a single clean rewrite of the current request in the email. It should read like a direct request or concise email-style summary of what is currently being asked, not like a keyword list and not like a label such as 'Current request: ...'.\n"
+            "- For the reranker query, remove greetings, signatures, and stale quoted or forwarded material when they are not needed, but keep the background information that is necessary to understand the current request.\n"
+            "- HARD RULE FOR ALL OUTPUTS, INCLUDING THE RERANKER QUERY: NEVER write student or applicant names, student IDs, national IDs, passport or NIE numbers, application numbers, enrollment numbers, bank details, payment references, or any other personally identifiable information. If those details appear in the email, replace them with a generic role such as 'student', 'applicant', or 'Erasmus student'. The only person names that may appear are university-side names such as professor, coordinator, or staff names, and only when the email is explicitly about that person as a retrieval target. If a generated query contains student-side personal data, that query is WRONG and must be rewritten.\n\n"
             "### OUTPUT FORMAT:\n"
-            f"Output only the queries inside these tags. Use all three sections, and put one or more query tags inside each section, totalling up to {QUERY_REWRITER_MAX_QUERIES}.\n"
+            "Output only the retrieval queries and reranker query inside these tags.\n"
             f"{QUERIES_OPENING_TAG}\n"
             f"{KEYWORD_QUERIES_OPENING_TAG}\n"
             f"{QUERY_OPENING_TAG}keyword query here{QUERY_CLOSING_TAG}\n"
@@ -546,73 +664,145 @@ MODEL_PROFILES = {
             f"{NATURAL_QUERIES_OPENING_TAG}\n"
             f"{QUERY_OPENING_TAG}natural query here{QUERY_CLOSING_TAG}\n"
             f"{NATURAL_QUERIES_CLOSING_TAG}\n"
+            f"{HYDE_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}hypothetical answer or document snippet here{QUERY_CLOSING_TAG}\n"
+            f"{HYDE_QUERIES_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_OPENING_TAG}\n"
             f"{QUERY_OPENING_TAG}question query here{QUERY_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_CLOSING_TAG}\n"
-            f"{QUERIES_CLOSING_TAG}\n\n"
+            f"{QUERIES_CLOSING_TAG}\n"
+            f"{RERANKER_QUERY_OPENING_TAG}clean reranker query here{RERANKER_QUERY_CLOSING_TAG}\n\n"
             "### EXAMPLE:\n"
             "Email:\n"
             "---\n"
-            "Hola, me gustaria saber que conocimientos previos necesito para Redes bayesianas y si hay examen final.\n"
+            "Buenos días,\n"
+            "me llamo Laura Pérez y soy estudiante del Máster en Ciencia de Datos de la UPM. Mi número de matrícula es 222222.\n"
+            "Me gustaría cambiarme a vuestro máster sin terminar este y, si fuera posible, hacerlo además en colaboración con la Universidad Paul Sabatier de Toulouse.\n"
+            "¿Es posible y qué oficina o procedimiento tendría que seguir?\n"
             "---\n"
             "Output:\n"
             f"{QUERIES_OPENING_TAG}\n"
             f"{KEYWORD_QUERIES_OPENING_TAG}\n"
-            f"{QUERY_OPENING_TAG}A4 prerequisites{QUERY_CLOSING_TAG}\n"
-            f"{QUERY_OPENING_TAG}Redes bayesianas final exam{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Data Science master transfer{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}switch masters from Data Science{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}master transfer admission pathway{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}external university mobility procedure{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}mobility agreement Paul Sabatier{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Paul Sabatier Toulouse collaboration{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}master transfer plus mobility procedure{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}master transfer mobility combination{QUERY_CLOSING_TAG}\n"
             f"{KEYWORD_QUERIES_CLOSING_TAG}\n"
             f"{NATURAL_QUERIES_OPENING_TAG}\n"
-            f"{QUERY_OPENING_TAG}Bayesian Networks prerequisites in the Master in Artificial Intelligence{QUERY_CLOSING_TAG}\n"
-            f"{QUERY_OPENING_TAG}Final exam for Redes bayesianas in the Master in Artificial Intelligence{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Master's transfer procedure from the Master in Data Science{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Transfer requirements for a student in the Master in Data Science{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Office responsible for master's transfer requests{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Mobility or collaboration options with the University Paul Sabatier of Toulouse{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Procedure to request mobility with an external university{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Contact point for mobility applications involving the University Paul Sabatier of Toulouse{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Whether a student in the Master in Data Science can transfer and also request mobility with the University Paul Sabatier of Toulouse{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Administrative procedure for combining a master's transfer with external university mobility{QUERY_CLOSING_TAG}\n"
             f"{NATURAL_QUERIES_CLOSING_TAG}\n"
+            f"{HYDE_QUERIES_OPENING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Transfers from the Master in Data Science are handled through the standard transfer or admission procedure{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}The responsible office for transfer requests reviews applications from students changing masters{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Students leaving the Master in Data Science must follow the standard enrollment pathway{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Mobility with the University Paul Sabatier of Toulouse is handled through the corresponding agreement and application procedure{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}External university mobility requests are handled through a defined office and procedure rather than through student-specific case tracking{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}The mobility program includes the University Paul Sabatier of Toulouse as a destination university{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}A master's transfer and external university mobility are processed as separate administrative steps{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Transfer requirements and mobility requirements are listed in separate procedures{QUERY_CLOSING_TAG}\n"
+            f"{HYDE_QUERIES_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_OPENING_TAG}\n"
-            f"{QUERY_OPENING_TAG}What prior knowledge is required for Bayesian Networks A4?{QUERY_CLOSING_TAG}\n"
-            f"{QUERY_OPENING_TAG}Does Redes bayesianas A4 have a final exam?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}How can I transfer from the Master in Data Science?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}What are the transfer requirements for a student in the Master in Data Science?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Which office handles transfer requests?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Is there a mobility or collaboration option with the University Paul Sabatier of Toulouse?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}What is the procedure to request mobility with an external university?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Which office handles mobility or collaboration requests with external universities?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}Can a student in the Master in Data Science transfer and also request mobility with the University Paul Sabatier of Toulouse?{QUERY_CLOSING_TAG}\n"
+            f"{QUERY_OPENING_TAG}What administrative steps combine a master's transfer with external university mobility?{QUERY_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_CLOSING_TAG}\n"
-            f"{QUERIES_CLOSING_TAG}\n\n"
-            "Email:\n"
+            f"{QUERIES_CLOSING_TAG}\n"
+            f"{RERANKER_QUERY_OPENING_TAG}I need information about transferring from the Master in Data Science and about whether there is a mobility or collaboration option with the University Paul Sabatier of Toulouse, including the responsible office and procedure.{RERANKER_QUERY_CLOSING_TAG}\n\n"
+            "Email subject:\n"
             "---\n"
-            "{text}\n"
+            "{subject}\n"
+            "---\n"
+            "Email body:\n"
+            "---\n"
+            "{body}\n"
             "---\n"
             "Output:\n"
         ),
         "max_new_tokens": 8192,
-        "temperature": 0.7,
+        "temperature": QUERY_REWRITER_TEMPERATURE,
         "top_p": 0.8,
         "top_k": 20,
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
         "return_prompt_text": False
     },
     LLM_JUDGE_PROFILE: {
-        "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
-        "enable_thinking": True,
+        "provider": LLM_JUDGE_SETTINGS["provider"],
+        "model_name_or_path": LLM_JUDGE_SETTINGS["model_name_or_path"],
+        "enable_thinking": LLM_JUDGE_SETTINGS["enable_thinking"],
+        "reasoning_effort": LLM_JUDGE_SETTINGS["reasoning_effort"],
         "is_vision_model": False,
         "system_prompt": (
-            "You are an expert retrieval relevance judge."
+            "You are an expert answerability judge for retrieval."
         ),
         "prompt_template": (
-            "You will receive one user query and several candidate chunks.\n"
-            "Your task is to score how useful each candidate chunk is for answering the user query.\n\n"
-            "### SCORING CRITERIA:\n"
-            "Score each candidate chunk between 0.0 and 1.0 based on how useful it is for answering the query.\n"
-            "- 0.0: unrelated or useless\n"
-            "- 0.25: weak relevance\n"
-            "- 0.5: partially useful\n"
-            "- 0.75: strongly relevant\n"
-            "- 1.0: directly answers the query or provides the key missing facts\n\n"
-            "### SCORING RULES:\n"
-            "1. Return one score for each candidate chunk, in the same order as the input.\n"
-            "2. Each score must be a decimal number between 0.0 and 1.0.\n"
-            "3. Use 0.0 for no relevance, 1.0 for highly useful direct relevance, and intermediate values for partial usefulness.\n"
-            "4. Score usefulness for answering the query, not just keyword overlap.\n"
-            "5. Output only the scores inside the required tags.\n\n"
-            "### OUTPUT FORMAT:\n"
-            f"{SCORES_OPENING_TAG}\n"
-            f"{SCORE_OPENING_TAG}0.0{SCORE_CLOSING_TAG}\n"
-            f"{SCORE_OPENING_TAG}0.5{SCORE_CLOSING_TAG}\n"
-            f"{SCORE_OPENING_TAG}1.0{SCORE_CLOSING_TAG}\n"
-            f"{SCORES_CLOSING_TAG}\n\n"
+            "You will receive one user query and several knowledge-base chunks, each with an explicit chunk ID.\n"
+            "Your task is to decide whether the query is answerable using only the provided chunks.\n\n"
+            "### CONTEXT:\n"
+            "The query is an anonymized rewrite of an email. "
+            "Student names, IDs, grades, internal case history, and other personal details may have been removed or generalized. "
+            "The email is about the MUIA master's program, which is an official master's program taught by the Department of Artificial Intelligence at the School of Computer Engineering of the Universidad Politécnica de Madrid (UPM).\n"
+            "- Evidence can appear at different levels. A chunk specifically about MUIA is the strongest kind of evidence. If there is no more specific MUIA chunk, a general UPM administrative rule can still be treated as applicable to MUIA when it clearly applies to UPM official master's programs or to UPM students. This is especially relevant for matters such as matrícula, cancellation, modification, deadlines, documentation, SEPA, and other general administrative procedures. Do not transfer rules from another named master's program, another degree, or another program to MUIA. If both a general UPM rule and a more specific MUIA rule are present, prefer the MUIA rule.\n"
+            "- Judge answerability at the level of the exact public issue being asked, such as a policy, procedure, requirement, limit, approval rule, eligibility criterion, responsible office, or document type. A single query may contain more than one sub-request, and the final label must reflect the whole anonymized request rather than only one part of it. A subquery is a separable public question that could reasonably require different evidence or receive a different answerability label. This can happen even when the overall topic is the same. For example, 'How do I access Moodle?' and 'Where do I find the class schedule with room locations?' should usually be treated as two subqueries because they ask for different information and may rely on different chunks. First identify whether the query is really a single issue or whether it contains multiple subqueries that should be judged separately. Do not downgrade the label just because student-specific identity, private case state, or internal follow-up details were anonymized away.\n"
+            "- The emails used for evaluation may be several years old, while the knowledge base is crawled later and refreshed yearly. The goal is to judge whether the current knowledge base contains public information that would be useful to answer the type of request, not whether it reproduces the exact historical year or date mentioned in the original case.\n"
+            "- This judgment is part of an evaluation pipeline used to understand where performance succeeds or fails across the system, including knowledge-base coverage, retrieval and encoding quality, and later training of discriminator-style models or filtered subsets for encoder training. Because of that, focus on whether the chunks contain transferable public information that would help answer the request type, not on whether they exactly mirror the original historical case.\n"
+            "- Treat years, exact calendar dates, student names, and exact external subject titles as incidental case details by default. Do not lower answerability just because those exact details are not repeated in the chunks. If an email mentions something like 2022, a specific day, or a named student only because it comes from the old case description, that does not by itself require a chunk tied to that same year, date, or person. Judge whether the chunks provide the governing rule, limit, procedure, requirement, or responsible office for the issue. A later or undated rule, procedure, limit, or office can still count as useful support when it addresses the same issue.\n"
+            "- Generic topic overlap is not enough, and a chunk can still deserve label -1 if it is on the right topic but does not help answer the exact public issue.\n"
+            "Example: if the anonymized query is 'Can I recognize 60 credits from another university for these subjects?', the chunks do not need to mention the exact student or decide whether those exact subjects will be recognized. "
+            "The important public issue is the recognition rule or credit limit. "
+            "If the query is only asking whether that recognition is possible, chunks that only explain the credit-recognition procedure without the relevant limit or rule should usually receive label -1. "
+            "A procedure-only chunk should move that example to label 0 only if the anonymized query is also explicitly asking how to carry out the request.\n\n"
+            "### OUTPUT RULES:\n"
+            "- Subqueries: The query may contain one or more subqueries. Output one subquery block for each subquery present in the query. If the query is really about a single issue, output exactly one subquery block. Each subquery block must contain the subquery text, the subquery answerability label, the subquery confidence, the subquery supporting chunk IDs, the subquery insufficient chunk IDs, and the subquery rationale.\n"
+            "- Subquery answerability: At the subquery level, use label 1 when that subquery is fully answerable, label 0 when that subquery is only partially answerable because an important public piece is still missing, and label -1 when that subquery does not have meaningful support. For subquery labels 1 and 0, supporting chunk IDs may be used, with **at most 5 IDs**. Put a chunk in supporting chunk IDs only if it contributes usable information toward answering that same subquery, even if it is not enough for a full answer. For subquery label -1, the supporting chunk ID list must be empty. Insufficient chunk IDs may be used for any subquery label, with **at most 3 IDs**. Put a chunk in insufficient chunk IDs only if it is topically related but does not contribute usable information toward answering that same subquery, so it would not by itself justify label 0. You may use insufficient chunk IDs to show near-miss chunks that are thematically related but still do not answer the subquery. The same chunk ID must never appear in both supporting chunk IDs and insufficient chunk IDs for the same subquery. Subquery confidence must be a decimal number between 0.0 and 1.0 with exactly one decimal place.\n"
+            "- Top-level answerability: The top-level answerability is the summary of the subquery answerability. If there is only one subquery, the top-level answerability must match that subquery label. If every subquery receives label 1, the top-level answerability must be 1. If at least one subquery receives label 0 or 1 but the full query is not fully answerable, the top-level answerability must be 0. If every subquery receives label -1, the top-level answerability must be -1.\n"
+            "- Draft answer: If the top-level answerability label is 1 or 0, the draft answer is mandatory and must not be empty. It must be a brief reply of 1 to 2 short sentences that directly answers the query and sounds like a real email reply to the user. Write it as if you were replying from the MUIA side, using the role and account of the master's coordination/secretariat at masteria.dia@fi.upm.es. If the relevant office is that same MUIA coordination/secretariat side, answer directly instead of telling the student to contact that same email address. You may use facts contained in the chunks, but do not refer to the retrieval or judging process itself. Do not say things like 'the chunks say', 'the provided information indicates', 'the available information shows', or 'the retrieved evidence suggests'. When the chunks provide a concrete rule, limit, requirement, deadline, or office, state that concrete information explicitly instead of giving a vague procedural reply. If the top-level answerability label is -1, leave the draft answer empty.\n"
+            "- Subquery rationale: Each subquery must have its own rationale. For subquery label 0, it is mandatory and must briefly say what useful evidence was found and what important public information is still missing for that same subquery. For subquery label -1, it is mandatory and must say whether no relevant topic was found at all, or whether related chunks were found but they did not answer the exact public issue, and briefly explain why they were not enough for that same subquery. For subquery label 1, the rationale is optional and should usually be omitted unless the case is borderline.\n"
+            "- General constraints: Use only the provided chunks. Do not use outside knowledge. Base the decision on whether the query can actually be answered, not on keyword overlap or broad topic overlap. Output only the requested tags.\n\n"
+            "### OUTPUT EXAMPLE:\n"
+            f"{SUBQUERIES_OPENING_TAG}\n"
+            f"{SUBQUERY_OPENING_TAG}\n"
+            f"{SUBQUERY_TEXT_OPENING_TAG}What is the maximum recognition limit?{SUBQUERY_TEXT_CLOSING_TAG}\n"
+            f"{SUBQUERY_ANSWERABILITY_OPENING_TAG}1{SUBQUERY_ANSWERABILITY_CLOSING_TAG}\n"
+            f"{SUBQUERY_CONFIDENCE_OPENING_TAG}0.9{SUBQUERY_CONFIDENCE_CLOSING_TAG}\n"
+            f"{SUBQUERY_SUPPORTING_CHUNK_IDS_OPENING_TAG}\n"
+            f"{CHUNK_ID_OPENING_TAG}3{CHUNK_ID_CLOSING_TAG}\n"
+            f"{CHUNK_ID_OPENING_TAG}8{CHUNK_ID_CLOSING_TAG}\n"
+            f"{SUBQUERY_SUPPORTING_CHUNK_IDS_CLOSING_TAG}\n"
+            f"{SUBQUERY_INSUFFICIENT_CHUNK_IDS_OPENING_TAG}\n"
+            f"{SUBQUERY_INSUFFICIENT_CHUNK_IDS_CLOSING_TAG}\n"
+            f"{SUBQUERY_RATIONALE_OPENING_TAG}{SUBQUERY_RATIONALE_CLOSING_TAG}\n"
+            f"{SUBQUERY_CLOSING_TAG}\n"
+            f"{SUBQUERY_OPENING_TAG}\n"
+            f"{SUBQUERY_TEXT_OPENING_TAG}Which office or form is required for the request?{SUBQUERY_TEXT_CLOSING_TAG}\n"
+            f"{SUBQUERY_ANSWERABILITY_OPENING_TAG}-1{SUBQUERY_ANSWERABILITY_CLOSING_TAG}\n"
+            f"{SUBQUERY_CONFIDENCE_OPENING_TAG}0.8{SUBQUERY_CONFIDENCE_CLOSING_TAG}\n"
+            f"{SUBQUERY_SUPPORTING_CHUNK_IDS_OPENING_TAG}\n"
+            f"{SUBQUERY_SUPPORTING_CHUNK_IDS_CLOSING_TAG}\n"
+            f"{SUBQUERY_INSUFFICIENT_CHUNK_IDS_OPENING_TAG}\n"
+            f"{CHUNK_ID_OPENING_TAG}12{CHUNK_ID_CLOSING_TAG}\n"
+            f"{SUBQUERY_INSUFFICIENT_CHUNK_IDS_CLOSING_TAG}\n"
+            f"{SUBQUERY_RATIONALE_OPENING_TAG}The chunks provide the recognition limit, but they do not identify the exact office, form, or step-by-step procedure needed to answer this subquery.{SUBQUERY_RATIONALE_CLOSING_TAG}\n"
+            f"{SUBQUERY_CLOSING_TAG}\n"
+            f"{SUBQUERIES_CLOSING_TAG}\n"
+            f"{ANSWERABILITY_OPENING_TAG}0{ANSWERABILITY_CLOSING_TAG}\n"
+            f"{DRAFT_ANSWER_OPENING_TAG}The maximum recognition is 50% of the credits of the master's program. However, I cannot confirm the exact office or form needed for this request.{DRAFT_ANSWER_CLOSING_TAG}\n"
+            "\n"
             "### INPUT:\n"
             "Query:\n"
             "{query}\n\n"
@@ -620,10 +810,10 @@ MODEL_PROFILES = {
             "{chunks}\n\n"
             "Output:\n"
         ),
-        "max_new_tokens": 2048,
-        "temperature": 0.3,
-        "top_p": 0.8,
-        "top_k": 20,
+        "max_new_tokens": LLM_JUDGE_SETTINGS["max_new_tokens"],
+        "temperature": LLM_JUDGE_SETTINGS["temperature"],
+        "top_p": LLM_JUDGE_SETTINGS["top_p"],
+        "top_k": LLM_JUDGE_SETTINGS["top_k"],
         "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
         "return_prompt_text": False
     }

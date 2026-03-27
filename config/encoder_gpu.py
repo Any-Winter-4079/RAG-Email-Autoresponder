@@ -7,6 +7,7 @@ MIN_CONTAINERS = 0 # 0 to make sure we don't pay 24/7
 
 # Run `image.add_local_*` commands last in your image build to avoid rebuilding images with every local file change.
 image = _base_image.pip_install(
+    "FlagEmbedding",
     "llama-index",
     "fastembed-gpu",
     "qdrant-client>=1.14.2",

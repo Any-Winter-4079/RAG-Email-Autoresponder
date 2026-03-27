@@ -168,7 +168,7 @@ CRAWL_MONTH = 9
 
 RUN_ENCODING = True
 
-REUSE_CRAWL = False
+REUSE_CRAWL = True
 REUSE_CRAWL_PAST_CURRENT_YEAR = False
 REUSE_TIMESTAMP = "20260311_055008" # reuse this within the same year if REUSE_CRAWL, forever if REUSE_CRAWL_PAST_CURRENT_YEAR
 RECREATE_QDRANT_COLLECTIONS = True
@@ -177,6 +177,7 @@ FILE_START = "crawl_"
 RAW_PATH = f"{VOLUME_PATH}/raw"
 MANUALLY_CLEANED_PATH = f"{VOLUME_PATH}/manually_cleaned"
 LM_CLEANED_PATH = f"{VOLUME_PATH}/lm_cleaned"
+CONFIGS_PATH = f"{VOLUME_PATH}/configs"
 
 RAW_CHUNKS_PATH = f"{VOLUME_PATH}/raw_chunks"
 MANUALLY_CLEANED_CHUNKS_PATH = f"{VOLUME_PATH}/manually_cleaned_chunks"
@@ -195,48 +196,66 @@ ENCODE_VARIANTS = {
         "encoders": {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
-            "colbert": {"batch_size": 1024},
-            "bge_small": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
     "manually_cleaned_chunks": {
         "encoders": {
-            "bm25": {"batch_size": 384},
-            "splade": {"batch_size": 384},
-            "colbert": {"batch_size": 384},
-            "bge_small": {"batch_size": 384},
+            "bm25": {"batch_size": 1024},
+            "splade": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_cleaned_text_chunks": {
         "encoders": {
-            "bm25": {"batch_size": 384},
-            "splade": {"batch_size": 384},
-            "colbert": {"batch_size": 384},
-            "bge_small": {"batch_size": 384},
+            "bm25": {"batch_size": 1024},
+            "splade": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_summary_chunks": {
         "encoders": {
-            "bm25": {"batch_size": 256},
-            "splade": {"batch_size": 256},
-            "colbert": {"batch_size": 256},
-            "bge_small": {"batch_size": 256},
+            "bm25": {"batch_size": 1024},
+            "splade": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_q_and_a_chunks": {
         "encoders": {
-            "bm25": {"batch_size": 64},
-            "splade": {"batch_size": 64},
-            "colbert": {"batch_size": 64},
-            "bge_small": {"batch_size": 64},
+            "bm25": {"batch_size": 1024},
+            "splade": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_q_and_a_for_q_only_chunks": {
         "encoders": {
-            "bm25": {"batch_size": 64},
-            "splade": {"batch_size": 64},
-            "colbert": {"batch_size": 64},
-            "bge_small": {"batch_size": 64},
+            "bm25": {"batch_size": 1024},
+            "splade": {"batch_size": 1024},
+            # "colbert": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
+            # "bge_large": {"batch_size": 1024},
+            "bge_m3": {"batch_size": 1024},
+            "jina_base_es": {"batch_size": 1024},
         },
     },
 }
@@ -247,7 +266,8 @@ PACKAGES = [
     "requests",
     "transformers",
     "torch",
-    "llama-index-core"
+    "llama-index-core",
+    "fastembed",
 ]
 
 image = (
