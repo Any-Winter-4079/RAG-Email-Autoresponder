@@ -1,3 +1,5 @@
+from helpers.eval import get_text_to_rerank_from_payload
+
 ###################################################
 # Helper 1: Check if email is from/to UPM domains #
 ###################################################
@@ -491,3 +493,243 @@ def split_samples_by_split_name(folder_uri_to_thread_id_to_samples, train_split_
             split_name_to_samples[best_split_name].extend(samples)
 
     return split_name_to_samples
+
+###############################################
+# Helper 18: Dedupe texts while keeping order #
+###############################################
+def dedupe_keep_order(texts):
+    seen = set()
+    deduped = []
+    for text in texts:
+        normalized_text = (text or "").strip()
+        if not normalized_text or normalized_text in seen:
+            continue
+        seen.add(normalized_text)
+        deduped.append(normalized_text)
+    return deduped
+
+##################################################
+# Helper 19: Extract rerank text from chunk list #
+##################################################
+def extract_chunk_texts(chunks):
+    texts = []
+    for chunk in chunks or []:
+        payload = chunk.get("payload") or {}
+        if not payload:
+            continue
+        texts.append(get_text_to_rerank_from_payload(payload))
+    return texts
+
+################################################
+# Helper 20: Build RRF results lookup by query #
+################################################
+def build_rrf_results_by_reranker_query(rrf_results):
+    rrf_results_by_reranker_query = {}
+    for rrf_result in rrf_results or []:
+        reranker_query = (rrf_result.get("reranker_query") or "").strip()
+        if not reranker_query:
+            continue
+        rrf_results_by_reranker_query[reranker_query] = rrf_result
+    return rrf_results_by_reranker_query
+
+#########################################################
+# Helper 21: Add text and source while preserving order #
+#########################################################
+def add_text_with_source(entries_by_text, text, source):
+    normalized_text = (text or "").strip()
+    if not normalized_text:
+        return
+    if normalized_text not in entries_by_text:
+        entries_by_text[normalized_text] = {
+            "text": normalized_text,
+            "sources": [source],
+        }
+        return
+    if source not in entries_by_text[normalized_text]["sources"]:
+        entries_by_text[normalized_text]["sources"].append(source)
+
+######################################################
+# Helper 22: Format original email as retrieval text #
+######################################################
+def format_original_email_query(sample):
+    email = sample.get("email") or {}
+    subject = (email.get("subject") or "").strip()
+    body = (email.get("body") or "").strip()
+    return f"Subject:\n{subject}\n\nBody:\n{body}"
+
+#####################################################
+# Helper 23: Build query entries for one sample key #
+#####################################################
+def build_query_entries_by_text(query_types, sample, reranker_query, query_rewrite_result):
+    query_entries_by_text = {}
+    for query_type in query_types:
+        if query_type == "reranker":
+            add_text_with_source(query_entries_by_text, reranker_query, "reranker")
+            continue
+        if query_type == "original_email":
+            add_text_with_source(
+                query_entries_by_text,
+                format_original_email_query(sample),
+                "original_email",
+            )
+            continue
+        for query_entry in (query_rewrite_result or {}).get("queries") or []:
+            if query_entry.get("query_type") != query_type:
+                continue
+            add_text_with_source(
+                query_entries_by_text,
+                query_entry.get("query"),
+                query_type,
+            )
+    return query_entries_by_text
+
+##############################################################
+# Helper 24: Build intermediate and final M3 fine-tune data  #
+##############################################################
+def build_training_rows(
+        oracle_results_by_variant,
+        rrf_results_by_variant,
+        query_rewrite_results_by_reranker_query,
+        query_types,
+        ):
+    training_samples_by_reranker_query = {}
+
+    for oracle_results in oracle_results_by_variant.values():
+        for result in oracle_results:
+            reranker_query = (result.get("reranker_query") or "").strip()
+            if not reranker_query:
+                continue
+            if reranker_query not in training_samples_by_reranker_query:
+                training_samples_by_reranker_query[reranker_query] = {
+                    "reranker_query": reranker_query,
+                    "sample": result.get("sample") or {},
+                    "queries_by_text": {},
+                    "pos_by_text": {},
+                    "neg_by_text": {},
+                    "has_answerability_0_or_1": False,
+                    "has_usable_subqueries": False,
+                }
+
+    for data_variant, oracle_results in oracle_results_by_variant.items():
+        for result in oracle_results:
+            reranker_query = (result.get("reranker_query") or "").strip()
+            if not reranker_query:
+                continue
+            training_sample = training_samples_by_reranker_query[reranker_query]
+            if result.get("generation_failed"):
+                continue
+
+            discriminator_result = result.get("discriminator_result")
+            if not discriminator_result:
+                continue
+            if discriminator_result.get("answerability") not in {"0", "1"}:
+                continue
+            training_sample["has_answerability_0_or_1"] = True
+
+            kept_subqueries = 0
+            for subquery in discriminator_result.get("subqueries") or []:
+                if subquery.get("answerability") == "-1":
+                    continue
+                kept_subqueries += 1
+                for positive_text in extract_chunk_texts(subquery.get("supporting_chunks")):
+                    add_text_with_source(
+                        training_sample["pos_by_text"],
+                        positive_text,
+                        f"oracle:{data_variant}",
+                    )
+                for negative_text in extract_chunk_texts(subquery.get("insufficient_chunks")):
+                    add_text_with_source(
+                        training_sample["neg_by_text"],
+                        negative_text,
+                        f"oracle:{data_variant}",
+                    )
+            if kept_subqueries > 0:
+                training_sample["has_usable_subqueries"] = True
+
+    n_total_oracle_results = len(training_samples_by_reranker_query)
+    n_possible_samples_answerability_0_or_1 = sum(
+        1
+        for training_sample in training_samples_by_reranker_query.values()
+        if training_sample["has_answerability_0_or_1"]
+    )
+    n_possible_samples_answerability_0_or_1_with_usable_subqueries = sum(
+        1
+        for training_sample in training_samples_by_reranker_query.values()
+        if training_sample["has_usable_subqueries"]
+    )
+
+    skipped_missing_pos = 0
+    n_rows_with_missing_neg = 0
+    n_rows_with_neg_added_from_rrf = 0
+    intermediate_samples = []
+
+    for reranker_query, training_sample in training_samples_by_reranker_query.items():
+        if not training_sample["has_usable_subqueries"]:
+            continue
+
+        positive_texts = list(training_sample["pos_by_text"].keys())
+        if len(positive_texts) == 0:
+            skipped_missing_pos += 1
+            continue
+
+        for data_variant, rrf_results_by_reranker_query in rrf_results_by_variant.items():
+            rrf_result = rrf_results_by_reranker_query.get(reranker_query)
+            if not rrf_result:
+                continue
+            for selected_chunk in rrf_result.get("retrieval_results") or []:
+                negative_text = get_text_to_rerank_from_payload(selected_chunk["payload"]).strip()
+                if negative_text in training_sample["pos_by_text"]:
+                    continue
+                add_text_with_source(
+                    training_sample["neg_by_text"],
+                    negative_text,
+                    f"rrf:{data_variant}",
+                )
+
+        if not training_sample["neg_by_text"]:
+            n_rows_with_missing_neg += 1
+        if any(
+            any(source.startswith("rrf:") for source in negative_entry["sources"])
+            for negative_entry in training_sample["neg_by_text"].values()
+        ):
+            n_rows_with_neg_added_from_rrf += 1
+
+        query_rewrite_result = query_rewrite_results_by_reranker_query.get(reranker_query)
+        query_entries_by_text = build_query_entries_by_text(
+            query_types=query_types,
+            sample=training_sample["sample"],
+            reranker_query=reranker_query,
+            query_rewrite_result=query_rewrite_result,
+        )
+        training_sample["queries_by_text"] = query_entries_by_text
+
+        intermediate_samples.append({
+            "reranker_query": reranker_query,
+            "queries": list(query_entries_by_text.values()),
+            "pos": list(training_sample["pos_by_text"].values()),
+            "neg": list(training_sample["neg_by_text"].values()),
+        })
+
+    training_rows = []
+    for intermediate_sample in intermediate_samples:
+        positive_texts = [positive_entry["text"] for positive_entry in intermediate_sample["pos"]]
+        negative_texts = [negative_entry["text"] for negative_entry in intermediate_sample["neg"]]
+        for query_entry in intermediate_sample["queries"]:
+            training_rows.append({
+                "query": query_entry["text"],
+                "pos": positive_texts,
+                "neg": negative_texts,
+            })
+
+    stats = {
+        "n_total_oracle_results": n_total_oracle_results,
+        "n_possible_samples_answerability_0_or_1": n_possible_samples_answerability_0_or_1,
+        "n_possible_samples_answerability_0_or_1_with_usable_subqueries": (
+            n_possible_samples_answerability_0_or_1_with_usable_subqueries
+        ),
+        "skipped_missing_pos": skipped_missing_pos,
+        "n_rows_with_missing_neg": n_rows_with_missing_neg,
+        "n_rows_with_neg_added_from_rrf": n_rows_with_neg_added_from_rrf,
+        "n_written_samples": len(intermediate_samples),
+    }
+    return intermediate_samples, training_rows, stats

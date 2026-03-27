@@ -141,10 +141,83 @@ def extract_lm_cleaned_content(
     questions = extract_matched_content(response, question_opening_tag, question_closing_tag)
     answers = extract_matched_content(response, answer_opening_tag, answer_closing_tag)
 
-    return [abstract, summary, cleanedtext, questions, answers]
+    return {
+        "abstract": abstract,
+        "summary": summary,
+        "cleanedtext": cleanedtext,
+        "questions": questions,
+        "answers": answers,
+    }
+
+#############################################
+# Helper 6: Extract query rewriter sections #
+#############################################
+def extract_query_rewriter_content(
+        response,
+        keyword_queries_opening_tag,
+        keyword_queries_closing_tag,
+        natural_queries_opening_tag,
+        natural_queries_closing_tag,
+        hyde_queries_opening_tag,
+        hyde_queries_closing_tag,
+        question_queries_opening_tag,
+        question_queries_closing_tag,
+        reranker_query_opening_tag,
+        reranker_query_closing_tag,
+        query_opening_tag,
+        query_closing_tag
+        ):
+
+    # if no response, do not return content
+    if response is None:
+        return None
+
+    # extract keyword queries, natural queries, hyde queries, question queries, reranker query
+    keyword_query_sections = extract_matched_content(response, keyword_queries_opening_tag, keyword_queries_closing_tag)
+    if keyword_query_sections:
+        # there should be a single keyword query section per response, so we extract the queries inside it
+        keyword_queries = extract_matched_content(keyword_query_sections[0], query_opening_tag, query_closing_tag)
+    else:
+        keyword_queries = []
+
+    natural_query_sections = extract_matched_content(response, natural_queries_opening_tag, natural_queries_closing_tag)
+    if natural_query_sections:
+        # there should be a single natural query section per response, so we extract the queries inside it
+        natural_queries = extract_matched_content(natural_query_sections[0], query_opening_tag, query_closing_tag)
+    else:
+        natural_queries = []
+
+    hyde_query_sections = extract_matched_content(response, hyde_queries_opening_tag, hyde_queries_closing_tag)
+    if hyde_query_sections:
+        # there should be a single hyde query section per response, so we extract the queries inside it
+        hyde_queries = extract_matched_content(hyde_query_sections[0], query_opening_tag, query_closing_tag)
+    else:
+        hyde_queries = []
+
+    question_query_sections = extract_matched_content(response, question_queries_opening_tag, question_queries_closing_tag)
+    if question_query_sections:
+        # there should be a single question query section per response, so we extract the queries inside it
+        question_queries = extract_matched_content(question_query_sections[0], query_opening_tag, query_closing_tag)
+    else:
+        question_queries = []
+
+    reranker_queries = extract_matched_content(response, reranker_query_opening_tag, reranker_query_closing_tag)
+    if reranker_queries:
+        # there should be a single reranker query per response
+        reranker_query = reranker_queries[0]
+    else:
+        reranker_query = None
+
+    return {
+        "keyword_queries": keyword_queries,
+        "natural_queries": natural_queries,
+        "hyde_queries": hyde_queries,
+        "question_queries": question_queries,
+        "reranker_query": reranker_query,
+    }
 
 ##########################################
-# Helper 6: Extract <score>...</score>'s #
+# Helper 7: Extract <score>...</score>'s #
 ##########################################
 def extract_score_values(response, score_opening_tag, score_closing_tag):
     scores = extract_matched_content(response, score_opening_tag, score_closing_tag)
@@ -159,8 +232,134 @@ def extract_score_values(response, score_opening_tag, score_closing_tag):
             return None
     return parsed_scores
 
+######################################################
+# Helper 8: Extract structured LLM judge output tags #
+######################################################
+def extract_llm_judge_content(
+        response,
+        answerability_opening_tag,
+        answerability_closing_tag,
+        subqueries_opening_tag,
+        subqueries_closing_tag,
+        subquery_opening_tag,
+        subquery_closing_tag,
+        subquery_text_opening_tag,
+        subquery_text_closing_tag,
+        subquery_answerability_opening_tag,
+        subquery_answerability_closing_tag,
+        subquery_confidence_opening_tag,
+        subquery_confidence_closing_tag,
+        subquery_supporting_chunk_ids_opening_tag,
+        subquery_supporting_chunk_ids_closing_tag,
+        subquery_insufficient_chunk_ids_opening_tag,
+        subquery_insufficient_chunk_ids_closing_tag,
+        subquery_rationale_opening_tag,
+        subquery_rationale_closing_tag,
+        chunk_id_opening_tag,
+        chunk_id_closing_tag,
+        draft_answer_opening_tag,
+        draft_answer_closing_tag,
+        ):
+    if response is None:
+        return None
+
+    answerability_values = extract_matched_content(
+        response,
+        answerability_opening_tag,
+        answerability_closing_tag,
+    )
+    draft_answer_values = extract_matched_content(
+        response,
+        draft_answer_opening_tag,
+        draft_answer_closing_tag,
+    )
+    subquery_sections = extract_matched_content(
+        response,
+        subqueries_opening_tag,
+        subqueries_closing_tag,
+    )
+
+    if not answerability_values:
+        return None
+
+    if subquery_sections:
+        raw_subqueries = extract_matched_content(
+            subquery_sections[0],
+            subquery_opening_tag,
+            subquery_closing_tag,
+        )
+    else:
+        raw_subqueries = []
+
+    subqueries = []
+    for raw_subquery in raw_subqueries:
+        subquery_text_values = extract_matched_content(
+            raw_subquery,
+            subquery_text_opening_tag,
+            subquery_text_closing_tag,
+        )
+        subquery_answerability_values = extract_matched_content(
+            raw_subquery,
+            subquery_answerability_opening_tag,
+            subquery_answerability_closing_tag,
+        )
+        subquery_confidence_values = extract_matched_content(
+            raw_subquery,
+            subquery_confidence_opening_tag,
+            subquery_confidence_closing_tag,
+        )
+        subquery_supporting_sections = extract_matched_content(
+            raw_subquery,
+            subquery_supporting_chunk_ids_opening_tag,
+            subquery_supporting_chunk_ids_closing_tag,
+        )
+        subquery_insufficient_sections = extract_matched_content(
+            raw_subquery,
+            subquery_insufficient_chunk_ids_opening_tag,
+            subquery_insufficient_chunk_ids_closing_tag,
+        )
+        subquery_rationale_values = extract_matched_content(
+            raw_subquery,
+            subquery_rationale_opening_tag,
+            subquery_rationale_closing_tag,
+        )
+        if subquery_supporting_sections:
+            subquery_supporting_chunk_ids = extract_matched_content(
+                subquery_supporting_sections[0],
+                chunk_id_opening_tag,
+                chunk_id_closing_tag,
+            )
+        else:
+            subquery_supporting_chunk_ids = []
+        if subquery_insufficient_sections:
+            subquery_insufficient_chunk_ids = extract_matched_content(
+                subquery_insufficient_sections[0],
+                chunk_id_opening_tag,
+                chunk_id_closing_tag,
+            )
+        else:
+            subquery_insufficient_chunk_ids = []
+        try:
+            subquery_confidence = round(float(subquery_confidence_values[0]), 1)
+        except Exception:
+            subquery_confidence = None
+        subqueries.append({
+            "text": subquery_text_values[0] if subquery_text_values else "",
+            "answerability": subquery_answerability_values[0] if subquery_answerability_values else "",
+            "confidence": subquery_confidence,
+            "supporting_chunk_ids": subquery_supporting_chunk_ids,
+            "insufficient_chunk_ids": subquery_insufficient_chunk_ids,
+            "rationale": subquery_rationale_values[0] if subquery_rationale_values else "",
+        })
+
+    return {
+        "answerability": answerability_values[0],
+        "subqueries": subqueries,
+        "draft_answer": draft_answer_values[0] if draft_answer_values else "",
+    }
+
 ##########################
-# Helper 7: Count tokens #
+# Helper 9: Count tokens #
 ##########################
 def count_tokens(tokenizer, text):
     try:
@@ -169,9 +368,9 @@ def count_tokens(tokenizer, text):
         print(f"count_tokens: error counting tokens: {e}")
         return 0
 
-################################
-# Helper 8: Truncate to tokens #
-################################
+#################################
+# Helper 10: Truncate to tokens #
+#################################
 def truncate_to_tokens(tokenizer, text, max_tokens):
     try:
         token_ids = tokenizer.encode(text, add_special_tokens=False)
