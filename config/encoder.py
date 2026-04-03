@@ -58,6 +58,17 @@ EMBEDDING_ENCODERS = {
         "max_recommended_input_size": 8192,
         "use_fp16": True,
     },
+    "bge_m3_muia": {
+        "model_name": "Edue3r4t5y6/bge-m3-MUIA",
+        "service": ENCODER_GPU_APP_NAME,
+        "function": RUN_ENCODER_GPU_BATCH_EMBEDDER_FUNCTION_NAME,
+        "fastembed_kind": "dense",
+        "embedding_backend": "flag_embedding",
+        "vector_size": 1024,
+        "distance": "cosine",
+        "max_recommended_input_size": 8192,
+        "use_fp16": True,
+    },
     "jina_base_es": {
         "model_name": "jinaai/jina-embeddings-v2-base-es",
         "service": ENCODER_GPU_APP_NAME,

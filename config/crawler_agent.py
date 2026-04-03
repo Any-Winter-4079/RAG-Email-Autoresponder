@@ -1,5 +1,6 @@
 import modal
 from config.general import VOLUME_PATH
+from config.m3 import IS_FINETUNED
 
 START_URL = "https://muia.dia.fi.upm.es/es/"
 MAX_DEPTH = 3
@@ -191,6 +192,10 @@ LM_SUMMARY_SUBCHUNKS_PATH = f"{VOLUME_PATH}/lm_summary_subchunks"
 LM_Q_AND_A_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_valid_chunks"
 LM_Q_AND_A_FOR_Q_ONLY_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_for_q_only_valid_chunks"
 
+M3_ENCODE_ENCODERS = {"bge_m3": {"batch_size": 1024}}
+if IS_FINETUNED:
+    M3_ENCODE_ENCODERS["bge_m3_muia"] = {"batch_size": 1024}
+
 ENCODE_VARIANTS = {
     "raw_chunks": {
         "encoders": {
@@ -199,7 +204,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },
@@ -210,7 +215,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },
@@ -221,7 +226,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },
@@ -232,7 +237,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },
@@ -243,7 +248,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },
@@ -254,7 +259,7 @@ ENCODE_VARIANTS = {
             # "colbert": {"batch_size": 1024},
             # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
-            "bge_m3": {"batch_size": 1024},
+            **M3_ENCODE_ENCODERS,
             "jina_base_es": {"batch_size": 1024},
         },
     },

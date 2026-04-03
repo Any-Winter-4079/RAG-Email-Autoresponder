@@ -2,6 +2,7 @@ DATASET_PATH = "data/email_messages/messages.csv"
 KNOWLEDGE_BASE_MESSAGES_PATH = "data/knowledge_base_messages/messages_for_knowledge_base.jsonl"
 MESSAGES_WITH_THREADS_DATASET_PATH = "data/email_messages/messages_with_threads.csv"
 SPLIT_DATASETS_DIR = "data/split_datasets"
+SHUFFLE_SEED = 42
 UPM_DOMAINS = [
     "upm.es",
     "fi.upm.es",
@@ -20,10 +21,9 @@ PRE_ENROLLMENT_TEMPLATES = [
     "El documento que recibe a continuación es la solicitud de preinscripción al Master/Doctorado que usted coordina/gestiona."
 ]
 REMOVE_INTERNAL_UPM_MESSAGES = True
-TRAIN_SPLIT_PCT = 0.5
-DEV_SPLIT_PCT = 0.25
-VAL_SPLIT_PCT = 0.15
-# TEST_SPLIT_PCT = 1 - (TRAIN_SPLIT_PCT + DEV_SPLIT_PCT + VAL_SPLIT_PCT)
+TRAIN_SPLIT_PCT = 0.7
+DEV_SPLIT_PCT = 0.15
+# TEST_SPLIT_PCT = 1 - (TRAIN_SPLIT_PCT + DEV_SPLIT_PCT)
 
 M3_FINETUNE_QUERY_TYPES = [
     "reranker",
@@ -32,9 +32,9 @@ M3_FINETUNE_DATA_VARIANTS = [
     "lm_summary_chunks",
 ]
 M3_FINETUNE_ORACLE_DISCRIMINATOR_SPLIT = "train"
-M3_FINETUNE_ORACLE_DISCRIMINATOR_TIMESTAMPS_BY_VARIANT = {
+M3_FINETUNE_VARIANT_TO_ORACLE_DISCRIMINATOR_TIMESTAMP = {
     "lm_summary_chunks": None,
 }
-M3_FINETUNE_RRF_TIMESTAMPS_BY_VARIANT = {
+M3_FINETUNE_VARIANT_TO_RRF_TIMESTAMP = {
     "lm_summary_chunks": None,
 }
