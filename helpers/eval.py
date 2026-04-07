@@ -14,19 +14,26 @@ def write_eval_output_to_file(data_variant_results_dir, output_name, eval_output
     print(f"\twrote {data_variant}/{json_path.name}")
     print()
 
+###########################################
+# Helper 2: Build source query from email #
+###########################################
+def build_source_query(sample):
+    source_subject = (sample["email"].get("subject") or "").strip()
+    source_body = (sample["email"].get("body") or "").strip()
+    return f"Subject:\n{source_subject}\n\nBody:\n{source_body}"
+
 ###################################################
-# Helper 2: Get rerank text from collection point #
+# Helper 3: Get rerank text from collection point #
 ###################################################
 def get_text_to_rerank_from_payload(payload):
-    variant = payload["variant"]
-    if variant == "lm_q_and_a_for_q_only_chunks":
+    if "question" in payload and "answer" not in payload:
         return payload["question"]
-    if variant == "lm_q_and_a_chunks":
+    if "question" in payload and "answer" in payload:
         return f"Q: {payload['question']}\nA: {payload['answer']}"
     return payload["text"]
 
 ######################################################
-# Helper 3: Load selected split samples for eval run #
+# Helper 4: Load selected split samples for eval run #
 ######################################################
 def load_selected_split_samples(
         project_root,
@@ -63,6 +70,11 @@ def load_selected_split_samples(
         folder_uri: 0
         for folder_uri in all_folder_uris
     }
+    if n_eval_samples_per_folder_uri is None:
+        for sample in all_split_samples:
+            folder_uri_to_n_selected[sample["folder_uri"]] += 1
+        return all_split_samples, folder_uri_to_n_selected
+
     split_samples = []
     for sample in all_split_samples:
         folder_uri = sample["folder_uri"]

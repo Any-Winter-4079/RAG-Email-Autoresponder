@@ -18,8 +18,16 @@ def get_context_emails_mode_suffix(context_emails_mode):
         return "_with_context"
     return ""
 
+###############################################################
+# Helper 2: Get query-rewrite cache sample-cap suffix for run #
+###############################################################
+def get_n_eval_samples_per_folder_uri_suffix(n_eval_samples_per_folder_uri):
+    if n_eval_samples_per_folder_uri is None:
+        return "_nall"
+    return f"_n{n_eval_samples_per_folder_uri}"
+
 ##########################
-# Helper 2: Resolve path #
+# Helper 3: Resolve path #
 ##########################
 def resolve_path(
         search_root,
@@ -39,18 +47,22 @@ def resolve_path(
     return max(candidate_paths, key=candidate_key)
 
 ##############################################
-# Helper 3: Resolve query rewrite cache path #
+# Helper 4: Resolve query rewrite cache path #
 ##############################################
 def resolve_query_rewrite_cache_path(
         project_root,
         query_rewrite_cache_dir,
         split_name,
         context_emails_mode,
+        n_eval_samples_per_folder_uri,
         configured_cache_filename=None,
         ):
     cache_dir = Path(project_root) / query_rewrite_cache_dir
     filter_mode_suffix = get_context_emails_mode_suffix(context_emails_mode)
-    cache_pattern = f"{split_name}{filter_mode_suffix}_*.json"
+    n_eval_samples_suffix = get_n_eval_samples_per_folder_uri_suffix(
+        n_eval_samples_per_folder_uri
+    )
+    cache_pattern = f"{split_name}{filter_mode_suffix}_*{n_eval_samples_suffix}.json"
     if configured_cache_filename:
         return cache_dir / configured_cache_filename
 
@@ -63,11 +75,14 @@ def resolve_query_rewrite_cache_path(
             f"\tpattern: {cache_pattern}"
         ),
         candidate_key=lambda cache_path: cache_path.stat().st_mtime,
-        candidate_filter=lambda cache_path: not cache_path.name.endswith("_reranker_queries.json"),
+        candidate_filter=lambda cache_path: (
+            not cache_path.name.endswith("_reranker_queries.json")
+            and not cache_path.name.endswith("_no_requests.json")
+        ),
     )
 
 #############################################################
-# Helper 4: Resolve dumped collection payload file for eval #
+# Helper 5: Resolve dumped collection payload file for eval #
 #############################################################
 def resolve_dumped_collection_payloads_path(
         project_root,
@@ -99,7 +114,7 @@ def resolve_dumped_collection_payloads_path(
     )
 
 ######################################################
-# Helper 5: Resolve oracle discriminator result path #
+# Helper 6: Resolve oracle discriminator result path #
 ######################################################
 def resolve_oracle_discriminator_path(
         project_root,
@@ -130,7 +145,7 @@ def resolve_oracle_discriminator_path(
     )
 
 #######################################################
-# Helper 6: Resolve run_data_variant_eval output file #
+# Helper 7: Resolve run_data_variant_eval output file #
 #######################################################
 def resolve_data_variant_eval_output_path(
         project_root,
