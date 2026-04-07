@@ -1,4 +1,6 @@
+data/discarded_threads/
 data/email_messages/
+data/finetune/
 data/knowledge_base_messages/
 data/split_datasets/
 eval/results/
