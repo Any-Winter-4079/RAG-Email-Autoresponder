@@ -24,7 +24,7 @@ python -m pip install --upgrade pip
 pip install dotenv transformers torch torchvision matplotlib modal cycler
 ```
 
-These local packages are needed for the data-preparation scripts that load Hugging Face tokenizers/processors locally.
+These local packages are needed for the data-preparation scripts.
 
 When you open a new terminal, reactivate the environment with:
 
