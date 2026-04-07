@@ -1,6 +1,6 @@
 from config.general import modal_secret, rag_volume, VOLUME_PATH
-from config.modal_apps import CRAWLER_AGENT_APP_NAME, DECODER_APP_NAME, COLLECTION_HANDLER_APP_NAME
-from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME, CREATE_COLLECTIONS_FUNCTION_NAME, WRITE_BATCH_POINTS_FUNCTION_NAME
+from config.modal_apps import CRAWLER_AGENT_APP_NAME, COLLECTION_HANDLER_APP_NAME
+from config.modal_functions import CREATE_COLLECTIONS_FUNCTION_NAME, WRITE_BATCH_POINTS_FUNCTION_NAME
 from config.crawler_agent import (
     image,
     MODAL_TIMEOUT,
@@ -151,11 +151,14 @@ async def run_crawler_agent():
 
                 # select decoder configuration for data cleaning
                 model_config = DECODER_MODEL_PROFILES[DATA_CLEANER_PROFILE].copy()
+                decoder_app_name = model_config.pop("decoder_app_name")
+                decoder_function_name = model_config.pop("decoder_function_name")
+                run_local_lm_or_vlm = modal.Function.from_name(decoder_app_name, decoder_function_name)
 
-                # pop (and save) "prompt_template" (run_qwen3_lm_or_vlm would not expect it as model_config)
+                # pop (and save) "prompt_template" (run_local_lm_or_vlm would not expect it as model_config)
                 prompt_template = model_config.pop("prompt_template")
 
-                # pop "max_chunk_size" (run_qwen3_lm_or_vlm would not expect it as model_config)
+                # pop "max_chunk_size" (run_local_lm_or_vlm would not expect it as model_config)
                 model_config.pop("max_chunk_size")
 
                 page_history_first_n = model_config.pop("page_history_first_n")
@@ -207,7 +210,7 @@ async def run_crawler_agent():
                         )
                     else:
                         model_config.pop("reasoning_effort", None)
-                        lm_cleaned_content, prompt_text = await run_qwen3_lm_or_vlm.remote.aio(
+                        lm_cleaned_content, prompt_text = await run_local_lm_or_vlm.remote.aio(
                             context=[],
                             current_turn_input_text=prompt,
                             current_turn_image_in_bytes=None,
@@ -471,13 +474,6 @@ async def run_crawler_agent():
         
         except Exception as e:
             print(f"run_crawler_agent: error loading tokenizers or creating splitter: {e}")
-            return
-
-        # find decoder service
-        try:
-            run_qwen3_lm_or_vlm = modal.Function.from_name(DECODER_APP_NAME, RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME)
-        except Exception as e:
-            print(f"run_crawler_agent: failed to find decoder service. Is it deployed? Error: {e}")
             return
     
         # crawl

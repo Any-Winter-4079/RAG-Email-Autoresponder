@@ -1,6 +1,5 @@
 from config.general import modal_secret
-from config.modal_apps import EMAIL_AGENT_APP_NAME, DECODER_APP_NAME
-from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME
+from config.modal_apps import EMAIL_AGENT_APP_NAME
 from config.email_agent import (
     image,
     MODAL_TIMEOUT,
@@ -98,7 +97,9 @@ def run_email_agent():
     
     # find decoder service
     try:
-        run_qwen3_lm_or_vlm = modal.Function.from_name(DECODER_APP_NAME, RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME)
+        decoder_app_name = email_writer_profile_config.pop("decoder_app_name")
+        decoder_function_name = email_writer_profile_config.pop("decoder_function_name")
+        run_local_lm_or_vlm = modal.Function.from_name(decoder_app_name, decoder_function_name)
     except Exception as e:
         print(f"run_email_agent: failed to find decoder service. Is it deployed? Error: {e}")
         return
@@ -183,7 +184,7 @@ def run_email_agent():
     # select decoder configuration for email writing
     email_writer_profile_config = MODEL_PROFILES[EMAIL_WRITER_PROFILE].copy()
 
-    # pop (and save) "prompt_template" and "max_context_tokens" (run_qwen3_lm_or_vlm would not expect them)
+    # pop (and save) "prompt_template" and "max_context_tokens" (run_local_lm_or_vlm would not expect them)
     prompt_template = email_writer_profile_config.pop("prompt_template")
     max_context_tokens = email_writer_profile_config.pop("max_context_tokens")
 
@@ -420,7 +421,7 @@ def run_email_agent():
 
         # run decoder (without "template" in email_writer_profile_config)
         try:
-            proposed_reply, prompt_text = run_qwen3_lm_or_vlm.remote(
+            proposed_reply, prompt_text = run_local_lm_or_vlm.remote(
                 context=[],
                 current_turn_input_text=prompt,
                 current_turn_image_in_bytes=None,

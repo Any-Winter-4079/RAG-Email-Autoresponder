@@ -1,6 +1,5 @@
 from config.general import modal_secret
-from config.modal_apps import LLM_JUDGE_APP_NAME, DECODER_APP_NAME
-from config.modal_functions import RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME
+from config.modal_apps import LLM_JUDGE_APP_NAME, DECODER_LEGACY_APP_NAME
 from config.decoder import MODEL_PROFILES, LLM_JUDGE_PROFILE
 from config.llm_judge import image, MODAL_TIMEOUT, SCALEDOWN_WINDOW, MIN_CONTAINERS
 import modal
@@ -86,12 +85,12 @@ def run_llm_judge(query, chunks):
         return None
 
     judge_profile_config.pop("reasoning_effort", None)
-    run_qwen3_lm_or_vlm = modal.Function.from_name(
-        DECODER_APP_NAME,
-        RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME,
+    run_local_lm_or_vlm_legacy = modal.Function.from_name(
+            DECODER_LEGACY_APP_NAME,
+            RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
     )
     try:
-        judge_result, _ = run_qwen3_lm_or_vlm.remote(
+        judge_result, _ = run_local_lm_or_vlm_legacy.remote(
             context=[],
             current_turn_input_text=prompt,
             current_turn_image_in_bytes=None,
@@ -102,3 +101,4 @@ def run_llm_judge(query, chunks):
     except Exception as e:
         print(f"run_llm_judge: local decoder generation failed: {e}")
         return None
+from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME
