@@ -1,4 +1,4 @@
-from config.decoder import base_image as _base_image
+from config.decoder_legacy import base_image as _base_image
 
 GPU = "L40S"
 SCALEDOWN_WINDOW = 60 # seconds

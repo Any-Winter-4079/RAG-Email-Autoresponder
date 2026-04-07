@@ -1,5 +1,6 @@
 # need to match function names in services/
-RUN_QWEN3_LM_OR_VLM_FUNCTION_NAME = "run_qwen3_lm_or_vlm"
+RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME = "run_local_lm_or_vlm_legacy"
+RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME = "run_local_lm_or_vlm_latest"
 RUN_LLM_JUDGE_FUNCTION_NAME = "run_llm_judge"
 CREATE_COLLECTIONS_FUNCTION_NAME = "create_collections"
 DROP_LEGACY_COLLECTIONS_FUNCTION_NAME = "drop_legacy_collections"

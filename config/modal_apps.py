@@ -1,4 +1,5 @@
-DECODER_APP_NAME = "decoder"
+DECODER_LEGACY_APP_NAME = "decoder-legacy"
+DECODER_LATEST_APP_NAME = "decoder-latest"
 LLM_JUDGE_APP_NAME = "llm-judge"
 CRAWLER_AGENT_APP_NAME = "crawler-agent"
 EMAIL_AGENT_APP_NAME = "email-agent"

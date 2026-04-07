@@ -1,16 +1,17 @@
-import modal
 from config.crawler_agent import ALLOWED_URL_HOST_TO_CATEGORY
+from config.modal_apps import DECODER_LEGACY_APP_NAME
+from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME
+from config.modal_apps import DECODER_LATEST_APP_NAME
+from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME
+from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME
 
 COMMON_PACKAGES = [
     "torchvision",
-    "transformers==4.57.0",
     "accelerate",
-    "peft==0.17.1",
     "Pillow",
     "requests",
     "hf_transfer",
 ]
-GPU = "L40S"
 SCALEDOWN_WINDOW = 60 # seconds
 TIMEOUT = 900 # seconds
 MIN_CONTAINERS = 0 # 0 to make sure we don't pay 24/7
@@ -53,6 +54,8 @@ QUESTION_QUERIES_CLOSING_TAG = "</questionqueries>"
 
 NO_REQUEST_OPENING_TAG = "<norequest>"
 NO_REQUEST_CLOSING_TAG = "</norequest>"
+NO_USEFUL_INFORMATION_OPENING_TAG = "<nousefulinformation>"
+NO_USEFUL_INFORMATION_CLOSING_TAG = "</nousefulinformation>"
 RERANKER_QUERY_OPENING_TAG = "<rerankerquery>"
 RERANKER_QUERY_CLOSING_TAG = "</rerankerquery>"
 QUERY_REWRITER_SECTION_TO_MAX_QUERIES = {
@@ -178,57 +181,164 @@ THREAD_SUBJECT_CLOSING_TAG = "</subject>"
 THREAD_BODY_OPENING_TAG = "<body>"
 THREAD_BODY_CLOSING_TAG = "</body>"
 
-THREAD_GROUPER_MAX_EMAILS = 20
+THREAD_GROUPER_MAX_EMAILS = 24
 EMAIL_WRITER_PROFILE = "email_writer"
 THREAD_GROUPER_PROFILE = "thread_grouper"
 DATA_CLEANER_PROFILE = "data_cleaner"
+EMAIL_KNOWLEDGE_BASE_CURATOR_PROFILE = "email_knowledge_base_curator"
 QUERY_REWRITER_PROFILE = "query_rewriter"
 LLM_JUDGE_PROFILE = "llm_judge"
+
+QWEN3_MODEL_FAMILY = "qwen3"
+GEMMA4_MODEL_FAMILY = "gemma4"
+
+QWEN3_8B_FP8_MODEL_NAME_OR_PATH = "Qwen/Qwen3-8B-FP8"
+QWEN3_14B_FP8_MODEL_NAME_OR_PATH = "Qwen/Qwen3-14B-FP8"
+GEMMA4_26B_A4B_IT_MODEL_NAME_OR_PATH = "google/gemma-4-26B-A4B-it"
+QWEN3_DEFAULT_SAMPLING = {
+    "temperature": 0.1,
+    "top_p": 0.8,
+    "top_k": 20,
+}
+GEMMA4_DEFAULT_SAMPLING = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 64,
+}
+QWEN3_8B_FP8_MODEL_SETTINGS = {
+    "model_family": QWEN3_MODEL_FAMILY,
+    "model_name_or_path": QWEN3_8B_FP8_MODEL_NAME_OR_PATH,
+    **QWEN3_DEFAULT_SAMPLING,
+}
+QWEN3_14B_FP8_MODEL_SETTINGS = {
+    "model_family": QWEN3_MODEL_FAMILY,
+    "model_name_or_path": QWEN3_14B_FP8_MODEL_NAME_OR_PATH,
+    **QWEN3_DEFAULT_SAMPLING,
+}
+GEMMA4_26B_A4B_IT_MODEL_SETTINGS = {
+    "model_family": GEMMA4_MODEL_FAMILY,
+    "model_name_or_path": GEMMA4_26B_A4B_IT_MODEL_NAME_OR_PATH,
+    **GEMMA4_DEFAULT_SAMPLING,
+}
+EMAIL_WRITER_SETTINGS = {
+    "decoder_app_name": DECODER_LEGACY_APP_NAME,
+    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
+    "provider": "local",
+    **QWEN3_8B_FP8_MODEL_SETTINGS,
+    "enable_thinking": True,
+    "is_vision_model": False,
+    "max_context_tokens": 32_768,
+    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "return_prompt_text": True,
+}
+THREAD_GROUPER_SETTINGS = {
+    "provider": "local",
+    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
+    "decoder_app_name": DECODER_LATEST_APP_NAME,
+    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
+    "enable_thinking": False,
+    "is_vision_model": False,
+    # Approximate Gemma 4 26B A4B IT memory budget in bf16:
+    # - full model weights: about 26B parameters * 2 bytes ~= 52 GB (~48.4 GiB)
+    # - H100 SXM memory: 81920 MiB = 80 GiB
+    # - approximate KV cache per token:
+    # 25 (sliding layers) * 8 (sliding KV heads) * 256 (head dim) * 2 (K and V) * 2 (bytes) = 204_800 bytes / token
+    # + 5 (global layers) * 2 (global KV heads) * 512 (global head dim) * 2 (K and V) * 2 (bytes) = 20_480 bytes / token
+    # = 225_280 bytes / token, so total KV cache is approximately sequence_length * 225_280 bytes for batch size 1.
+    # - rough shorthand: 80 - 48.4 ~= 31.6 GiB left for KV cache and runtime overhead
+    # - safer KV+overhead budget: about 20-24 GiB
+    # - approximate KV-only sequence-length budget:
+    #   20 GiB / 225_280 ~= 95_325 tokens
+    #   24 GiB / 225_280 ~= 114_390 tokens
+    "max_input_tokens": 32_768,
+    "max_new_tokens": 32_768,
+    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "return_prompt_text": True,
+}
+QUERY_REWRITER_SETTINGS = {
+    "decoder_app_name": DECODER_LATEST_APP_NAME,
+    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
+    "provider": "local",
+    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
+    "enable_thinking": True,
+    "is_vision_model": False,
+    "max_new_tokens": 8_192,
+    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "return_prompt_text": False,
+}
 
 DATA_CLEANER_PROVIDER = "local"
 DATA_CLEANER_PROVIDER_TO_SETTINGS = {
     "local": {
+        "decoder_app_name": DECODER_LEGACY_APP_NAME,
+        "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
         "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        **QWEN3_8B_FP8_MODEL_SETTINGS,
         "enable_thinking": True,
-        "reasoning_effort": "minimal",
+        "is_vision_model": False,
         "page_history_first_n": 5,
         "page_history_last_n": 15,
         "max_chunk_size": 1024,
+        "max_new_tokens": 8_192,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": True,
     },
     "openai": {
         "provider": "openai",
         "model_name_or_path": "gpt-5-nano",
         "enable_thinking": True,
         "reasoning_effort": "high",
+        "temperature": 0.1,
+        "top_p": 0.8,
+        "top_k": 20,
+        "is_vision_model": False,
         "page_history_first_n": 2,
         "page_history_last_n": 4,
         "max_chunk_size": 2048,
+        "max_new_tokens": 8_192,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": True,
     },
 }
 DATA_CLEANER_SETTINGS = DATA_CLEANER_PROVIDER_TO_SETTINGS[DATA_CLEANER_PROVIDER]
 
+EMAIL_KNOWLEDGE_BASE_CURATOR_SETTINGS = {
+    "decoder_app_name": DECODER_LATEST_APP_NAME,
+    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
+    "provider": "local",
+    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
+    "enable_thinking": True,
+    "is_vision_model": False,
+    "max_new_tokens": 8_192,
+    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "return_prompt_text": True,
+}
+
 LLM_JUDGE_PROVIDER = "openai"
 LLM_JUDGE_PROVIDER_TO_SETTINGS = {
     "local": {
+        "decoder_app_name": DECODER_LEGACY_APP_NAME,
+        "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
         "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
+        **QWEN3_8B_FP8_MODEL_SETTINGS,
         "enable_thinking": True,
-        "reasoning_effort": "minimal",
-        "max_new_tokens": 4096,
-        "temperature": 0.3,
-        "top_p": 0.8,
-        "top_k": 20,
+        "is_vision_model": False,
+        "max_new_tokens": 4_096,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": False,
     },
     "openai": {
         "provider": "openai",
         "model_name_or_path": "gpt-5.4-mini",
         "enable_thinking": True,
         "reasoning_effort": "medium",
-        "max_new_tokens": 8192,
+        "is_vision_model": False,
+        "max_new_tokens": 16_384,
         "temperature": 0.3,
         "top_p": 0.8,
         "top_k": 20,
+        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+        "return_prompt_text": False,
     },
 }
 LLM_JUDGE_SETTINGS = LLM_JUDGE_PROVIDER_TO_SETTINGS[LLM_JUDGE_PROVIDER]
@@ -255,10 +365,7 @@ EXAMPLE_PROF2_EMAIL = "luis.martin@fi.upm.es"
 
 MODEL_PROFILES = {
     EMAIL_WRITER_PROFILE: {
-        "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
-        "enable_thinking": True,
-        "is_vision_model": False,
+        **EMAIL_WRITER_SETTINGS,
         "system_prompt": "You are a concise, professional corporate email assistant.",
         "prompt_template": (
             "You are taking the role of {my_name}, {my_description}. You are reading an email sent to you.\n"
@@ -310,22 +417,12 @@ MODEL_PROFILES = {
             "---\n"
             "Output:\n"
         ),
-        "max_context_tokens": 32768,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "return_prompt_text": True
     },
     THREAD_GROUPER_PROFILE: {
-        "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-8B-FP8",
-        "enable_thinking": True,
-        "is_vision_model": False,
+        **THREAD_GROUPER_SETTINGS,
         "system_prompt": (
             "You are an expert email thread reconstruction assistant."
         ),
-        "max_context_tokens": 32768,
         "production_task_description_start": (
             "You have received {inbox_count} inbox emails and {sent_count} sent emails "
             "from {my_name} ({my_description}) INBOX and SENT folders. "
@@ -337,6 +434,17 @@ MODEL_PROFILES = {
             "It is a weak hint produced by an automated subject-based grouping and can be wrong. "
             "Your task is to output XML, reconstructing the threads and removing quoted text when it is already part of another email."
         ),
+        "dataset_task_description_start": (
+            "You have received {email_count} emails from a single mailbox folder. "
+            "Your task is to group all emails into threads and remove quoted text carefully. "
+            "The input emails are already in approximate chronological order. "
+            "Each email includes: 'id', 'threadID', 'from', 'to', 'subject', 'body', "
+            "and may optionally include 'date'. "
+            "'id' is a stable input identifier and is not the thread id. "
+            "'threadID' is not part of the original communication (and must not be written in the output XML). "
+            "It is a weak hint produced by an automated subject-based grouping and can be wrong. "
+            "Your task is to output XML, reconstructing the threads and removing quoted text when it is already part of another email."
+        ),
         "production_example": (
             "Input emails:\n"
             "Inbox:\n"
@@ -344,7 +452,7 @@ MODEL_PROFILES = {
             f"{{'id': b'448', 'threadID': 3, 'from': '{EXAMPLE_STAFF_NAME} <{EXAMPLE_STAFF_EMAIL}>', 'to': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'date': datetime.datetime(2020, 6, 11, 13, 32, 15, tzinfo=datetime.timezone.utc), 'subject': 'Fwd: Fichero egresados', 'body': \"Hola, {DIRECTOR_NAME}. Te reenvío aquí lo último que hice yo. Es de mayo de 2020. No sé si {EXAMPLE_COLLEAGUE_NAME} hizo alguno posterior. ¿Te sirve? {EXAMPLE_STAFF_NAME}\"}}\n"
             f"{{'id': b'432', 'threadID': 4, 'from': '{EXAMPLE_STUDENT_REP_NAME} <{EXAMPLE_STUDENT_REP_EMAIL}>', 'to': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'date': datetime.datetime(2020, 6, 12, 8, 55, 27, tzinfo=datetime.timezone.utc), 'subject': 'Orla/graduación de alumnos del máster en IA', 'body': \"Hola {DIRECTOR_NAME}, como delegado del máster en Inteligencia Artificial, me gustaría trasladarte la consulta de varios alumnos acerca de si se va a hacer orla / acto de graduación para los estudiantes del máster, o por si el contrario corre bajo nuestra cuenta hacerlo. ¡Un saludo! {EXAMPLE_STUDENT_REP_NAME} Máster Universitario en Inteligencia Artificial\"}}\n"
             "Sent:\n"
-            f"{{'id': b'441', 'threadID': 1, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined', 'date': datetime.datetime(2020, 5, 4, 11, 16, 0, tzinfo=datetime.timezone.utc), 'subject': 'Erasmus', 'body': \"I don't know about the other Degree; it is probably taught in another School, so that it can be tricky for you to attend both. Besides, I'm not sure you can follow courses from different School at the same time during your Erasmus. Please ask orex@fi.upm.es: they are in charge of the Erasmus Programme at Escuela Técnica Superior de Ingenieros Informáticos. regards -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\"}}\n"
+            f"{{'id': b'441', 'threadID': 1, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined', 'date': datetime.datetime(2020, 5, 4, 11, 16, 0, tzinfo=datetime.timezone.utc), 'subject': 'Re: Erasmus', 'body': \"I don't know about the other Degree; it is probably taught in another School, so that it can be tricky for you to attend both. Besides, I'm not sure you can follow courses from different School at the same time during your Erasmus. Please ask orex@fi.upm.es: they are in charge of the Erasmus Programme at Escuela Técnica Superior de Ingenieros Informáticos. regards -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\\n\\nOn Mon, 4 May 2020 at 09:08, {EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> wrote:\\n> Good morning. I am a student from Italy currently studying at my university. I would like to join the Erasmus program at Universidad Politécnica de Madrid. Would it be possible to take courses from both the MSc in Artificial Intelligence and the Máster Universitario en Automática y Robótica, or should I choose just one? Thank you\"}}\n"
             f"{{'id': b'3278', 'threadID': 2, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STAFF_EMAIL}', 'date': datetime.datetime(2020, 6, 10, 10, 39, 0, tzinfo=datetime.timezone.utc), 'subject': 'Estudio de egresados', 'body': \"Hola {EXAMPLE_STAFF_NAME}. Estoy con el informe de titulación. Cuál es el último informe de egresados que tenemos? Hay unos cuantos datos que estaría bien actualizar, como los ex-alumnos que están en el extranjero, los que están realizando un doctorado, etc. Además, dice aquí: El último estudio sobre empleabilidad realizado por el Observatorio Académico sobre titulaciones de postgrado de la ETSIINF es una encuesta fue realizada en el curso 2019/20. Tenemos uno más reciente? Gracias! -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\"}}\n"
             f"{{'id': b'3279', 'threadID': 3, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STAFF_EMAIL}', 'date': datetime.datetime(2020, 6, 11, 15, 0, 0, tzinfo=datetime.timezone.utc), 'subject': 'Fwd: Fichero egresados', 'body': \"Gracias {EXAMPLE_STAFF_NAME}. A ver lo que puedo sacar de aquí. Un saludo -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\"}}\n"
             f"{{'id': b'433', 'threadID': 4, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_DIRECTOR_PEER_EMAIL}', 'date': datetime.datetime(2020, 6, 12, 9, 10, 0, tzinfo=datetime.timezone.utc), 'subject': 'Fwd: Orla/graduación de alumnos del máster en IA', 'body': \"Hola {EXAMPLE_DIRECTOR_PEER_NAME}. Este mensaje me pilla tan de sorpresa que no sé ni cómo empezar a contestar. No se supone que acabamos de estar en el Wanda? A ver si tú lo sabes interpretar...\"}}\n"
@@ -359,7 +467,7 @@ MODEL_PROFILES = {
             f"{THREAD_MESSAGE_OPENING_TAG}\n"
             f"{THREAD_FROM_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_FROM_CLOSING_TAG}\n"
             f"{THREAD_TO_OPENING_TAG}{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined{THREAD_TO_CLOSING_TAG}\n"
-            f"{THREAD_SUBJECT_OPENING_TAG}Erasmus{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Re: Erasmus{THREAD_SUBJECT_CLOSING_TAG}\n"
             f"{THREAD_BODY_OPENING_TAG}I don't know about the other Degree; it is probably taught in another School, so that it can be tricky for you to attend both. Besides, I'm not sure you can follow courses from different School at the same time during your Erasmus. Please ask orex@fi.upm.es: they are in charge of the Erasmus Programme at Escuela Técnica Superior de Ingenieros Informáticos. regards -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}{THREAD_BODY_CLOSING_TAG}\n"
             f"{THREAD_MESSAGE_CLOSING_TAG}\n"
             f"{THREAD_CLOSING_TAG}\n"
@@ -398,10 +506,62 @@ MODEL_PROFILES = {
             f"{THREAD_MESSAGE_CLOSING_TAG}\n"
             f"{THREAD_CLOSING_TAG}"
         ),
+        "dataset_example": (
+            "Input emails:\n"
+            f"{{'id': '440', 'threadID': 1, 'from': '{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined', 'to': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'subject': 'Erasmus', 'body': \"Good morning. I am a student from Italy currently studying at my university. I would like to join the Erasmus program at Universidad Politécnica de Madrid. Would it be possible to take courses from both the MSc in Artificial Intelligence and the Máster Universitario en Automática y Robótica, or should I choose just one? Thank you\"}}\n"
+            f"{{'id': '441', 'threadID': 1, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined', 'subject': 'Re: Erasmus', 'body': \"I don't know about the other Degree; it is probably taught in another School, so that it can be tricky for you to attend both. Besides, I'm not sure you can follow courses from different School at the same time during your Erasmus. Please ask orex@fi.upm.es: they are in charge of the Erasmus Programme at Escuela Técnica Superior de Ingenieros Informáticos. regards -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\\n\\nOn Mon, 4 May 2020, {EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> wrote:\\n> Good morning. I am a student from Italy currently studying at my university. I would like to join the Erasmus program at Universidad Politécnica de Madrid. Would it be possible to take courses from both the MSc in Artificial Intelligence and the Máster Universitario en Automática y Robótica, or should I choose just one? Thank you\"}}\n"
+            f"{{'id': '3278', 'threadID': 2, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STAFF_EMAIL}', 'subject': 'Estudio de egresados', 'body': \"Hola {EXAMPLE_STAFF_NAME}. Estoy con el informe de titulación. Cuál es el último informe de egresados que tenemos? Hay unos cuantos datos que estaría bien actualizar, como los ex-alumnos que están en el extranjero, los que están realizando un doctorado, etc. Además, dice aquí: El último estudio sobre empleabilidad realizado por el Observatorio Académico sobre titulaciones de postgrado de la ETSIINF es una encuesta fue realizada en el curso 2019/20. Tenemos uno más reciente? Gracias! -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}\"}}\n"
+            f"{{'id': '3279', 'threadID': 3, 'from': '{EXAMPLE_STAFF_NAME} <{EXAMPLE_STAFF_EMAIL}>', 'to': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'subject': 'Fwd: Fichero egresados', 'body': \"Hola, {DIRECTOR_NAME}. Te reenvío aquí lo último que hice yo. Es de mayo de 2020. No sé si {EXAMPLE_COLLEAGUE_NAME} hizo alguno posterior. ¿Te sirve? {EXAMPLE_STAFF_NAME}\"}}\n"
+            f"{{'id': '3280', 'threadID': 3, 'from': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined', 'to': '{EXAMPLE_STAFF_EMAIL}', 'subject': 'Fwd: Fichero egresados', 'body': \"Gracias {EXAMPLE_STAFF_NAME}. A ver lo que puedo sacar de aquí. Un saludo\\n\\nOn Wed, 11 Jun 2020, {EXAMPLE_STAFF_NAME} wrote:\\n> Hola, {DIRECTOR_NAME}. Te reenvío aquí lo último que hice yo. Es de mayo de 2020. No sé si {EXAMPLE_COLLEAGUE_NAME} hizo alguno posterior. ¿Te sirve? {EXAMPLE_STAFF_NAME}\"}}\n"
+            f"{{'id': '3281', 'threadID': 4, 'from': '{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}>', 'to': '\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}>', 'subject': 'Questions about the programme', 'body': \"A\\n\\n\\nIs the programme taught in Spanish?\\n\\nPlease answer YES or NO\\n\\n\\nB\\n\\n\\nHow long does the master's degree last?\\n\\nPlease indicate the duration\\n\\n\\nC\\n\\n\\nIs the format online?\\n\\nPlease answer YES or NO\\n\\n\\nD\\n\\n\\nDo students work on real case studies?\\n\\nPlease answer YES or NO\"}}\n"
+            "Output:\n"
+            f"{THREAD_OPENING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Erasmus{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}Good morning. I am a student from Italy currently studying at my university. I would like to join the Erasmus program at Universidad Politécnica de Madrid. Would it be possible to take courses from both the MSc in Artificial Intelligence and the Máster Universitario en Automática y Robótica, or should I choose just one? Thank you{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}> undefined{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Re: Erasmus{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}I don't know about the other Degree; it is probably taught in another School, so that it can be tricky for you to attend both. Besides, I'm not sure you can follow courses from different School at the same time during your Erasmus. Please ask orex@fi.upm.es: they are in charge of the Erasmus Programme at Escuela Técnica Superior de Ingenieros Informáticos. regards -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_CLOSING_TAG}\n"
+            f"{THREAD_OPENING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}{EXAMPLE_STAFF_EMAIL}{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Estudio de egresados{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}Hola {EXAMPLE_STAFF_NAME}. Estoy con el informe de titulación. Cuál es el último informe de egresados que tenemos? Hay unos cuantos datos que estaría bien actualizar, como los ex-alumnos que están en el extranjero, los que están realizando un doctorado, etc. Además, dice aquí: El último estudio sobre empleabilidad realizado por el Observatorio Académico sobre titulaciones de postgrado de la ETSIINF es una encuesta fue realizada en el curso 2019/20. Tenemos uno más reciente? Gracias! -- {DIRECTOR_NAME} Coordinador del Máster Universitario en Inteligencia Artificial Universidad Politécnica de Madrid Escuela Técnica Superior de Ingenieros Informáticos Campus de Montegancedo S/N, 28660, Boadilla del Monte, Madrid SPAIN Departamento de Inteligencia Artificial {DEPARTMENT_PHONE} {DIRECTOR_EMAIL}{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}{EXAMPLE_STAFF_NAME} <{EXAMPLE_STAFF_EMAIL}>{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Fwd: Fichero egresados{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}Hola, {DIRECTOR_NAME}. Te reenvío aquí lo último que hice yo. Es de mayo de 2020. No sé si {EXAMPLE_COLLEAGUE_NAME} hizo alguno posterior. ¿Te sirve? {EXAMPLE_STAFF_NAME}{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}> undefined{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}{EXAMPLE_STAFF_EMAIL}{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Fwd: Fichero egresados{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}Gracias {EXAMPLE_STAFF_NAME}. A ver lo que puedo sacar de aquí. Un saludo{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_CLOSING_TAG}\n"
+            f"{THREAD_OPENING_TAG}\n"
+            f"{THREAD_MESSAGE_OPENING_TAG}\n"
+            f"{THREAD_FROM_OPENING_TAG}{EXAMPLE_STUDENT_NAME} <{EXAMPLE_STUDENT_EMAIL}>{THREAD_FROM_CLOSING_TAG}\n"
+            f"{THREAD_TO_OPENING_TAG}\"[MUIA] {DIRECTOR_NAME}\" <{DIRECTOR_EMAIL}>{THREAD_TO_CLOSING_TAG}\n"
+            f"{THREAD_SUBJECT_OPENING_TAG}Questions about the programme{THREAD_SUBJECT_CLOSING_TAG}\n"
+            f"{THREAD_BODY_OPENING_TAG}A Is the programme taught in Spanish? Please answer YES or NO\nB How long does the master's degree last? Please indicate the duration\nC Is the format online? Please answer YES or NO\nD Do students work on real case studies? Please answer YES or NO{THREAD_BODY_CLOSING_TAG}\n"
+            f"{THREAD_MESSAGE_CLOSING_TAG}\n"
+            f"{THREAD_CLOSING_TAG}"
+        ),
         "prompt_template": (
             "{task_description_start}\n\n"
             "### RULES:\n"
-            "1. Preserve chronological order within each thread.\n"
+            "1. Preserve chronological order within each thread. Output messages in oldest-to-newest order, so the first message inside each thread is the oldest and the last message is the newest.\n"
             "2. Remove quoted text only when the quoted content appears elsewhere in the input as the same text "
             "with fewer or no quote markers. Keep the least-quoted instance.\n"
             "   - Example: if B contains \"> A\" and A appears elsewhere unquoted, remove \"> A\" from B.\n"
@@ -409,8 +569,9 @@ MODEL_PROFILES = {
             "   - Example: if B has \"> A\" and C has \"> B\\n> A\", keep \"> A\" in B and remove the quoted part from C.\n"
             "   Reply headers such as 'En ... escribió:', 'On ... wrote:', 'De/Enviado/Para/Asunto' are a few indicators of quoted blocks.\n"
             f"3. Keep only the cleaned body inside {THREAD_BODY_OPENING_TAG}...{THREAD_BODY_CLOSING_TAG} tags.\n"
-            "4. Do not hallucinate or add new messages.\n"
-            "5. Output ONLY the thread XML, nothing else.\n\n"
+            "4. Normalize whitespace in cleaned bodies without removing information: trim unnecessary spaces, merge hard-wrapped lines that belong to the same paragraph, and collapse repeated blank lines to a single blank line.\n"
+            "5. Do not hallucinate or add new messages.\n"
+            "6. Output ONLY the thread XML, nothing else.\n\n"
             "### OUTPUT FORMAT:\n"
             f"{THREAD_OPENING_TAG}\n"
             f"{THREAD_MESSAGE_OPENING_TAG}\n"
@@ -433,27 +594,12 @@ MODEL_PROFILES = {
             "### ACTUAL TASK:\n"
             "---\n"
             "Input emails:\n"
-            "Inbox:\n"
-            "{inbox_emails}\n"
-            "Sent:\n"
-            "{sent_emails}\n"
+            "{emails_section}\n"
             "Output:\n"
         ),
-        "max_new_tokens": 8192,
-        "temperature": 0.7,
-        "top_p": 0.8,
-        "top_k": 20,
-        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "return_prompt_text": True
     },
     DATA_CLEANER_PROFILE: {
-        "provider": DATA_CLEANER_SETTINGS["provider"],
-        "model_name_or_path": DATA_CLEANER_SETTINGS["model_name_or_path"],
-        "enable_thinking": DATA_CLEANER_SETTINGS["enable_thinking"],
-        "reasoning_effort": DATA_CLEANER_SETTINGS["reasoning_effort"],
-        "is_vision_model": False,
-        "page_history_first_n": DATA_CLEANER_SETTINGS["page_history_first_n"],
-        "page_history_last_n": DATA_CLEANER_SETTINGS["page_history_last_n"],
+        **DATA_CLEANER_SETTINGS,
         "system_prompt": (
             "You are an expert Knowledge Curator for RAG."
         ),
@@ -590,19 +736,120 @@ MODEL_PROFILES = {
             "**Input Text**:\n{text}\n\n"
             "**Output**:\n"
         ),
-        "max_chunk_size": DATA_CLEANER_SETTINGS["max_chunk_size"],
-        "max_new_tokens": 8192,
-        "temperature": 0.1,
-        "top_p": 0.8,
-        "top_k": 20,
-        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "return_prompt_text": True
+    },
+    EMAIL_KNOWLEDGE_BASE_CURATOR_PROFILE: {
+        **EMAIL_KNOWLEDGE_BASE_CURATOR_SETTINGS,
+        "system_prompt": (
+            "You are an expert Knowledge Curator for RAG."
+        ),
+        "prompt_template": (
+            f"Your job is to do one of two things for an email thread: either convert it into reusable knowledge for retrieval, or, if the thread does not contain reusable institutional knowledge, output only {NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG}.\n"
+            "This data will be used by a retrieval system for current and prospective students interested in MUIA (Master's Degree in Artificial Intelligence), coordinated by the Department of Artificial Intelligence (DIA) at FI-UPM.\n\n"
+            "### GENERAL INSTRUCTIONS:\n"
+            "1. Write all outputs in English.\n"
+            "2. The input is not pre-anonymized. You must anonymize the outputs yourself by removing or generalizing personal names, personal email addresses, phone numbers, student identifiers, attachment references, and one-off case details that are not reusable.\n"
+            "3. Treat institutional answers as the main source of reusable knowledge. This includes replies from the coordinator, the administrative office, official university accounts, or another institutional representative speaking in that role.\n"
+            "4. Treat current or prospective students, applicants, and other non-institutional participants as external participants. Information provided only by external participants is not useful by itself unless it is needed to understand an institutional answer in the same thread.\n"
+            "5. Keep reusable institutional knowledge such as admission criteria, eligibility rules, required documents, deadlines, conditions, next steps, procedures, generic contact points, decision meanings, and realistic alternatives offered by the institution.\n"
+            "6. Remove email-only noise from all outputs: greetings, signatures, confidentiality notices, repeated acknowledgements, repeated disclaimers, and quoted or forwarded text that only duplicates information already present elsewhere in the thread.\n"
+            "7. If quoted or forwarded text is needed to understand an institutional answer, keep only the minimum necessary information and rewrite it in clean reusable form.\n"
+            "8. Do not invent policy, deadlines, requirements, or explanations that are not supported by the thread.\n"
+            f"9. If the thread contains only a request, only an acknowledgement, or discussion without a reusable institutional answer, output only {NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG}.\n\n"
+            "### OUTPUT-SPECIFIC INSTRUCTIONS:\n"
+            f"1. **Cleaned Text**: Produce a cleaned version inside {CLEANED_TEXT_OPENING_TAG} tags. This is a cleanup output, not a summary and not a rewrite. Keep all remaining substantive institutional content, preserve the original facts, wording, and structure as much as possible, translate to English, anonymize when needed, and remove only noise such as greetings, signatures, repeated acknowledgements, and duplicated quoted text. This output is for cleanup, not relevance filtering: keep all remaining content and do not drop content based on relevance.\n"
+            f"2. **Abstract**: Produce a concise 1-sentence overview inside {ABSTRACT_OPENING_TAG} tags.\n"
+            f"3. **Summary**: Produce a detailed, reorganized summary inside {SUMMARY_OPENING_TAG} tags. It should usually be shorter than the cleaned text, but it must retain important specific details such as named regulations, deadlines, conditions, required documents, decision criteria, and alternatives when they appear in the thread.\n"
+            f"4. **Q&A Pairs**: Generate up to {Q_AND_A_MAX_PAIRS} Q&A pairs inside {QUESTIONS_OPENING_TAG} tags, using {QUESTION_OPENING_TAG} and {ANSWER_OPENING_TAG} for each pair. Questions should sound like what a student or staff member would naturally ask later, not like curator notes. Keep each question and answer self-contained, anonymized, and free of vague references such as 'this student', 'this case', or 'this email'. Answers must contain the concrete details needed to stand alone.\n"
+            "5. Prefer generalizable questions about requirements, denial reasons, deadlines, next steps, conditions, who to contact, what a decision means, or how a procedure works.\n"
+            "6. If the thread contains little reusable knowledge, generate fewer Q&A pairs rather than inventing weak ones.\n"
+            f"7. If the thread does not contain reusable institutional knowledge, output only {NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG}.\n\n"
+            "### EXAMPLE 1:\n"
+            "**Input Email Thread**:\n"
+            "-----\n"
+            "From: masteria.dia@fi.upm.es\n"
+            "To: applicant@example.com\n"
+            "Subject: Denial - Master Universitario en Inteligencia Artificial at UPM\n\n"
+            "Dear applicant,\n\n"
+            "I regret having to deny your admission to the MUIA. The program is highly demanded and the number of applicants is much higher than the number of available places.\n\n"
+            "When making decisions, we prioritize applicants with strong computer science backgrounds and excellent previous academic results. The university of origin is also considered among other factors. Due to accreditation requirements such as Euro-Inf, professional experience cannot replace academic training, although it may still be considered.\n\n"
+            "Frequent denial reasons include having a degree too far from computer science, not having a sufficiently high average grade, coming from a university that is not considered among the strongest, or not proving Spanish proficiency. The main general constraint is also the limited number of available places.\n\n"
+            "If you remain interested in studying in our department, you may consider the Master's Degree in Data Science or several department-specific degrees as alternatives.\n\n"
+            "Best regards,\n"
+            "Coordinator\n"
+            "-----\n"
+            "**Output**:\n"
+            f"{ABSTRACT_OPENING_TAG}\n"
+            "Common reasons for denial of admission to the MUIA and possible alternative study options.\n"
+            f"{ABSTRACT_CLOSING_TAG}\n"
+            f"{SUMMARY_OPENING_TAG}\n"
+            "Admission to the MUIA is highly competitive because the number of applicants exceeds the number of available places. Selection prioritizes strong computer science backgrounds and excellent academic records, while university of origin may also be considered. Due to accreditation requirements such as Euro-Inf, professional experience cannot replace academic training, although it may still be considered. Common denial reasons include having a degree too far from computer science, not having a sufficiently high average grade, coming from a university that is not considered among the strongest, not proving Spanish proficiency, and the limited number of available places. Applicants who are not admitted may consider the Master's Degree in Data Science or department-specific degrees as alternatives.\n"
+            f"{SUMMARY_CLOSING_TAG}\n"
+            f"{CLEANED_TEXT_OPENING_TAG}\n"
+            "I regret having to deny your admission to the MUIA. The program is highly demanded, and the number of applicants is much higher than the number of available places.\n\n"
+            "When making decisions, we prioritize applicants with strong computer science backgrounds and excellent previous academic results. The university of origin is also considered among other factors. Due to accreditation requirements such as Euro-Inf, professional experience cannot replace academic training, although it may still be considered.\n\n"
+            "Frequent denial reasons include having a degree too far from computer science, not having a sufficiently high average grade, coming from a university that is not considered among the strongest, or not proving Spanish proficiency. The limited number of available places is also a major general constraint.\n\n"
+            "If you remain interested in studying in our department, you may consider the Master's Degree in Data Science or department-specific degrees as alternatives.\n"
+            f"{CLEANED_TEXT_CLOSING_TAG}\n"
+            f"{QUESTIONS_OPENING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}What are common reasons for denial of admission to the MUIA?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}Common reasons for denial of admission to the MUIA include having a degree too far from computer science, not having a sufficiently high average grade, coming from a university that is not considered among the strongest, not proving Spanish proficiency, and the limited number of available places compared with the number of qualified applicants.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}Can professional experience replace academic training for admission to the MUIA?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}No. Due to accreditation requirements such as Euro-Inf, professional experience cannot replace academic training for admission to the MUIA, although it may still be considered as an additional factor.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}What alternatives can be considered after denial of admission to the MUIA?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}Applicants who are not admitted to the MUIA may consider the Master's Degree in Data Science or department-specific degrees as alternative study options.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTIONS_CLOSING_TAG}\n\n"
+            "### EXAMPLE 2:\n"
+            "**Input Email Thread**:\n"
+            "-----\n"
+            "From: tramitacion.master.oficial@upm.es\n"
+            "To: applicant@example.com\n"
+            "Cc: masteria.dia@fi.upm.es\n"
+            "Subject: Admission to the Master Universitario en Inteligencia Artificial at UPM\n\n"
+            "Dear student,\n\n"
+            "Once your master's pre-registration documents have been reviewed, you have been granted conditional access pending completion of your studies. This does not imply final admission, because final admission still depends on the master's program coordinators.\n\n"
+            "According to Royal Decree 822/2021, it is possible to enroll in a master's program with only the bachelor's final project and up to 9 ECTS still pending. Therefore, before 15 October 2022, you must send an official academic transcript showing both the completed credits and the credits still pending. This document must be sent through this same channel in PDF format and must be smaller than two megabytes.\n\n"
+            "Kind regards,\n"
+            "Administrative Office\n"
+            "-----\n"
+            "**Output**:\n"
+            f"{ABSTRACT_OPENING_TAG}\n"
+            "Meaning of conditional access to the MUIA and the pending-document requirement before final admission.\n"
+            f"{ABSTRACT_CLOSING_TAG}\n"
+            f"{SUMMARY_OPENING_TAG}\n"
+            "Conditional access means that the documentation is valid for access to master's studies, but it does not imply final admission, which still depends on the master's program coordinators. Under Royal Decree 822/2021, a student may enroll with only the bachelor's final project and up to 9 ECTS still pending. In that case, an official academic transcript showing completed and pending credits must be sent before 15 October 2022 through the same communication channel, in PDF format, and with a file size smaller than two megabytes.\n"
+            f"{SUMMARY_CLOSING_TAG}\n"
+            f"{CLEANED_TEXT_OPENING_TAG}\n"
+            "Once the master's pre-registration documents have been reviewed, the applicant has been granted conditional access pending completion of studies. This does not imply final admission, because final admission still depends on the master's program coordinators.\n\n"
+            "According to Royal Decree 822/2021, it is possible to enroll in a master's program with only the bachelor's final project and up to 9 ECTS still pending.\n\n"
+            "Therefore, before 15 October 2022, the applicant must send an official academic transcript showing both the completed credits and the credits still pending. This document must be sent through the same communication channel in PDF format and must be smaller than two megabytes.\n"
+            f"{CLEANED_TEXT_CLOSING_TAG}\n"
+            f"{QUESTIONS_OPENING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}Does conditional access to the MUIA mean that the student has already been admitted?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}No. Conditional access to the MUIA means that the applicant's documentation is valid for access to master's studies, but final admission still depends on the master's program coordinators.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}Can a student enroll in the MUIA with the bachelor's final project and some credits still pending?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}Yes. Under Royal Decree 822/2021, a student may enroll in the MUIA with only the bachelor's final project and up to 9 ECTS still pending.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}What document must be sent after receiving conditional access to the MUIA?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}After receiving conditional access to the MUIA, the student must send an official academic transcript showing both the completed credits and the credits still pending.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTION_OPENING_TAG}What are the submission requirements for the transcript after conditional access to the MUIA?{QUESTION_CLOSING_TAG}\n"
+            f"{ANSWER_OPENING_TAG}The transcript must be sent before 15 October 2022 through the same communication channel, in PDF format, and with a file size smaller than two megabytes.{ANSWER_CLOSING_TAG}\n"
+            f"{QUESTIONS_CLOSING_TAG}\n\n"
+            "### EXAMPLE 3:\n"
+            "**Input Email Thread**:\n"
+            "-----\n"
+            "From: applicant@example.com\n"
+            "To: masteria.dia@fi.upm.es\n"
+            "Subject: Re: Erasmus information\n\n"
+            "Thank you very much for the information. I understand everything now.\n"
+            "-----\n"
+            "**Output**:\n"
+            f"{NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG}\n\n"
+            "### CURRENT TASK:\n"
+            "**Input Email Thread**:\n{thread_text}\n\n"
+            "**Output**:\n"
+        ),
     },
     QUERY_REWRITER_PROFILE: {
-        "provider": "local",
-        "model_name_or_path": "Qwen/Qwen3-14B-FP8",
-        "enable_thinking": True,
-        "is_vision_model": False,
+        **QUERY_REWRITER_SETTINGS,
         "system_prompt": (
             "You are an expert at generating retrieval queries."
         ),
@@ -766,19 +1013,9 @@ MODEL_PROFILES = {
             "---\n"
             "Output:\n"
         ),
-        "max_new_tokens": 8192,
-        "temperature": QUERY_REWRITER_TEMPERATURE,
-        "top_p": 0.8,
-        "top_k": 20,
-        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "return_prompt_text": False
     },
     LLM_JUDGE_PROFILE: {
-        "provider": LLM_JUDGE_SETTINGS["provider"],
-        "model_name_or_path": LLM_JUDGE_SETTINGS["model_name_or_path"],
-        "enable_thinking": LLM_JUDGE_SETTINGS["enable_thinking"],
-        "reasoning_effort": LLM_JUDGE_SETTINGS["reasoning_effort"],
-        "is_vision_model": False,
+        **LLM_JUDGE_SETTINGS,
         "system_prompt": (
             "You are an expert answerability judge for retrieval."
         ),
@@ -842,33 +1079,5 @@ MODEL_PROFILES = {
             "{chunks}\n\n"
             "Output:\n"
         ),
-        "max_new_tokens": LLM_JUDGE_SETTINGS["max_new_tokens"],
-        "temperature": LLM_JUDGE_SETTINGS["temperature"],
-        "top_p": LLM_JUDGE_SETTINGS["top_p"],
-        "top_k": LLM_JUDGE_SETTINGS["top_k"],
-        "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
-        "return_prompt_text": False
     }
 }
-
-_image_flash_attention_base = (
-    modal.Image.from_registry(FLASH_ATTENTION_IMAGE)
-    .run_commands(FLASH_ATTENTION_RUN_COMMANDS)
-    .pip_install(
-        FLASH_ATTENTION_TORCH_VERSION,
-        *COMMON_PACKAGES
-        )
-    .pip_install(FLASH_ATTENTION_RELEASE)
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-)
-_image_no_flash_attention_base = (
-    modal.Image.debian_slim(python_version=NO_FLASH_ATTENTION_PYTHON_VERSION)
-    .pip_install(
-        NO_FLASH_ATTENTION_TORCH_VERSION,
-        *COMMON_PACKAGES
-    )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
-)
-base_image = _image_flash_attention_base if USE_FLASH_ATTENTION_IMAGE else _image_no_flash_attention_base
-# Run `image.add_local_*` commands last in your image build to avoid rebuilding images with every local file change.
-image = base_image.add_local_python_source("config", "helpers")
