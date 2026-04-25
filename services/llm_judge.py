@@ -2,6 +2,7 @@ from config.general import modal_secret
 from config.modal_apps import LLM_JUDGE_APP_NAME, DECODER_LEGACY_APP_NAME
 from config.decoder import MODEL_PROFILES, LLM_JUDGE_PROFILE
 from config.llm_judge import image, MODAL_TIMEOUT, SCALEDOWN_WINDOW, MIN_CONTAINERS
+from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME
 import modal
 
 app = modal.App(LLM_JUDGE_APP_NAME)
@@ -101,4 +102,3 @@ def run_llm_judge(query, chunks):
     except Exception as e:
         print(f"run_llm_judge: local decoder generation failed: {e}")
         return None
-from config.modal_functions import RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME

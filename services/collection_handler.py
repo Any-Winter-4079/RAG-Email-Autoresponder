@@ -1,11 +1,13 @@
-from config.general import modal_secret, rag_volume, VOLUME_PATH
+from config.general import modal_secret
 from config.modal_apps import COLLECTION_HANDLER_APP_NAME
-from config.encoder_cpu import (
-    image,
+from config.encoder_cpu import image
+from config.collection_handler import (
     MODAL_TIMEOUT,
     SCALEDOWN_WINDOW,
-    MIN_CONTAINERS
+    MIN_CONTAINERS,
+    COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
 )
+from config.qdrant_server import QDRANT_EXTERNAL_PROXY_PORT
 import modal
 
 # modal run services/collection_handler.py::drop_legacy_collections
@@ -19,21 +21,23 @@ app = modal.App(COLLECTION_HANDLER_APP_NAME)
     timeout=MODAL_TIMEOUT,
     scaledown_window=SCALEDOWN_WINDOW,
     min_containers=MIN_CONTAINERS,
-    volumes={VOLUME_PATH: rag_volume},
 )
 def drop_legacy_collections():
+    import os
     from qdrant_client import QdrantClient
-    from config.general import QDRANT_PATH, LEGACY_COLLECTIONS
+    from config.general import LEGACY_COLLECTIONS
 
-    rag_volume.reload()
-    client = QdrantClient(path=QDRANT_PATH)
+    client = QdrantClient(
+        url=f"{os.environ['QDRANT_URL'].rstrip('/')}:{QDRANT_EXTERNAL_PROXY_PORT}",
+        api_key=os.environ["QDRANT_API_KEY"],
+        timeout=COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
+    )
     for collection_name in LEGACY_COLLECTIONS:
         if client.collection_exists(collection_name=collection_name):
             client.delete_collection(collection_name=collection_name)
             print(f"drop_legacy_collections: deleted '{collection_name}'")
         else:
             print(f"drop_legacy_collections: '{collection_name}' does not exist, skipping")
-    rag_volume.commit()
 
 @app.function(
     image=image,
@@ -41,73 +45,65 @@ def drop_legacy_collections():
     timeout=MODAL_TIMEOUT,
     scaledown_window=SCALEDOWN_WINDOW,
     min_containers=MIN_CONTAINERS,
-    volumes={VOLUME_PATH: rag_volume},
 )
 def create_collections(variants, recreate):
+    import os
+    from config.collection_handler import COLLECTION_HNSW_CONFIG
     from config.encoder import EMBEDDING_ENCODERS
-    from config.general import QDRANT_PATH
     from qdrant_client import QdrantClient, models
 
-    rag_volume.reload()
-    client = QdrantClient(path=QDRANT_PATH)
+    client = QdrantClient(
+        url=f"{os.environ['QDRANT_URL'].rstrip('/')}:{QDRANT_EXTERNAL_PROXY_PORT}",
+        api_key=os.environ["QDRANT_API_KEY"],
+        timeout=COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
+    )
+    hnsw_config = models.HnswConfigDiff(**COLLECTION_HNSW_CONFIG)
     for variant in variants:
         if not recreate and client.collection_exists(collection_name=variant):
             continue
         vectors_config = {}
         sparse_vectors_config = {}
         for encoder, encoder_config in EMBEDDING_ENCODERS.items():
-            fastembed_kind = encoder_config["fastembed_kind"]
-            if fastembed_kind == "sparse":
-                if encoder_config.get("modifier") == "idf":
-                    sparse_vectors_config[encoder] = models.SparseVectorParams(
-                        modifier=models.Modifier.IDF,
-                    )
+            embedding_kinds = encoder_config["embedding_kinds"]
+            for embedding_kind in embedding_kinds:
+                vector_name = encoder if len(embedding_kinds) == 1 else f"{encoder}_{embedding_kind}"
+                if embedding_kind == "sparse":
+                    if encoder_config.get("modifier") == "idf":
+                        sparse_vectors_config[vector_name] = models.SparseVectorParams(
+                            modifier=models.Modifier.IDF,
+                        )
+                    else:
+                        sparse_vectors_config[vector_name] = models.SparseVectorParams()
+                elif embedding_kind in {"dense", "late"}:
+                    distance_str = encoder_config["distance"]
+                    if distance_str == "cosine":
+                        distance = models.Distance.COSINE
+                    elif distance_str == "dot":
+                        distance = models.Distance.DOT
+                    elif distance_str == "euclid":
+                        distance = models.Distance.EUCLID
+                    elif distance_str == "manhattan":
+                        distance = models.Distance.MANHATTAN
+                    else:
+                        raise ValueError(f"create_collections: unsupported distance '{distance_str}' for encoder '{encoder}'")
+                    vector_params = {
+                        "size": encoder_config["vector_size"],
+                        "distance": distance,
+                    }
+                    if embedding_kind == "late":
+                        vector_params["multivector_config"] = models.MultiVectorConfig(
+                            comparator=models.MultiVectorComparator.MAX_SIM
+                        )
+                    vectors_config[vector_name] = models.VectorParams(**vector_params)
                 else:
-                    sparse_vectors_config[encoder] = models.SparseVectorParams()
-            elif fastembed_kind == "dense":
-                distance_str = encoder_config["distance"]
-                if distance_str == "cosine":
-                    distance = models.Distance.COSINE
-                elif distance_str == "dot":
-                    distance = models.Distance.DOT
-                elif distance_str == "euclid":
-                    distance = models.Distance.EUCLID
-                elif distance_str == "manhattan":
-                    distance = models.Distance.MANHATTAN
-                else:
-                    raise ValueError(f"create_collections: unsupported distance '{distance_str}' for encoder '{encoder}'")
-                vectors_config[encoder] = models.VectorParams(
-                    size=encoder_config["vector_size"],
-                    distance=distance,
-                )
-            elif fastembed_kind == "late":
-                distance_str = encoder_config["distance"]
-                if distance_str == "cosine":
-                    distance = models.Distance.COSINE
-                elif distance_str == "dot":
-                    distance = models.Distance.DOT
-                elif distance_str == "euclid":
-                    distance = models.Distance.EUCLID
-                elif distance_str == "manhattan":
-                    distance = models.Distance.MANHATTAN
-                else:
-                    raise ValueError(f"create_collections: unsupported distance '{distance_str}' for encoder '{encoder}'")
-                vectors_config[encoder] = models.VectorParams(
-                    size=encoder_config["vector_size"],
-                    distance=distance,
-                    multivector_config=models.MultiVectorConfig(
-                        comparator=models.MultiVectorComparator.MAX_SIM
-                    ),
-                )
-            else:
-                raise ValueError(f"create_collections: unsupported fastembed_kind '{fastembed_kind}' for encoder '{encoder}'")
+                    raise ValueError(f"create_collections: unsupported embedding kind '{embedding_kind}' for encoder '{encoder}'")
         client.recreate_collection(
             collection_name=variant,
             vectors_config=vectors_config,
             sparse_vectors_config=sparse_vectors_config,
+            hnsw_config=hnsw_config,
         )
         print(f"create_collections: recreated '{variant}'")
-    rag_volume.commit()
 
 @app.function(
     image=image,
@@ -115,14 +111,16 @@ def create_collections(variants, recreate):
     timeout=MODAL_TIMEOUT,
     scaledown_window=SCALEDOWN_WINDOW,
     min_containers=MIN_CONTAINERS,
-    volumes={VOLUME_PATH: rag_volume},
 )
 def dump_collection_payloads(collection_name, include_vectors=False, page_size=1024):
-    from config.general import QDRANT_PATH
+    import os
     from qdrant_client import QdrantClient
 
-    rag_volume.reload()
-    client = QdrantClient(path=QDRANT_PATH)
+    client = QdrantClient(
+        url=f"{os.environ['QDRANT_URL'].rstrip('/')}:{QDRANT_EXTERNAL_PROXY_PORT}",
+        api_key=os.environ["QDRANT_API_KEY"],
+        timeout=COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
+    )
     if not client.collection_exists(collection_name=collection_name):
         raise ValueError(
             "dump_collection_payloads: collection does not exist:\n"
@@ -165,32 +163,66 @@ def dump_collection_payloads(collection_name, include_vectors=False, page_size=1
     timeout=MODAL_TIMEOUT,
     scaledown_window=SCALEDOWN_WINDOW,
     min_containers=MIN_CONTAINERS,
-    volumes={VOLUME_PATH: rag_volume},
 )
 def write_batch_points(variant, batch, encoder, embeddings, upsert_or_update):
+    import os
     from config.encoder import EMBEDDING_ENCODERS
-    from config.general import QDRANT_PATH
     from qdrant_client import QdrantClient, models
 
     point_ids = batch["point_ids"]
     payloads = batch["payloads"]
     encoder_config = EMBEDDING_ENCODERS[encoder]
-    fastembed_kind = encoder_config["fastembed_kind"]
+    embedding_kinds = encoder_config["embedding_kinds"]
+    embedding_backend = encoder_config.get("embedding_backend", "fastembed")
 
-    rag_volume.reload()
-    client = QdrantClient(path=QDRANT_PATH)
+    for embedding_kind in embedding_kinds:
+        if embedding_kind not in embeddings:
+            raise ValueError(
+                f"write_batch_points: encoder '{encoder}' did not return "
+                f"embeddings for embedding kind '{embedding_kind}'"
+            )
+        if len(embeddings[embedding_kind]) != len(point_ids):
+            raise ValueError(
+                f"write_batch_points: encoder '{encoder}' returned "
+                f"{len(embeddings[embedding_kind])} embeddings for embedding kind "
+                f"'{embedding_kind}', expected {len(point_ids)}"
+            )
+
+    client = QdrantClient(
+        url=f"{os.environ['QDRANT_URL'].rstrip('/')}:{QDRANT_EXTERNAL_PROXY_PORT}",
+        api_key=os.environ["QDRANT_API_KEY"],
+        timeout=COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
+    )
 
     points = []
-    for point_id, payload, embedding in zip(point_ids, payloads, embeddings):
-        if fastembed_kind == "sparse":
-            vectors = {
-                encoder: models.SparseVector(
-                    indices=embedding.indices,
-                    values=embedding.values,
+    for point_index, (point_id, payload) in enumerate(zip(point_ids, payloads)):
+        vectors = {}
+        for embedding_kind in embedding_kinds:
+            vector_name = encoder if len(embedding_kinds) == 1 else f"{encoder}_{embedding_kind}"
+            embedding = embeddings[embedding_kind][point_index]
+            if embedding_kind == "sparse":
+                if embedding_backend == "flag_embedding":
+                    vectors[vector_name] = models.SparseVector(
+                        indices=[int(token_id) for token_id in embedding.keys()],
+                        values=list(embedding.values()),
+                    )
+                elif embedding_backend == "fastembed":
+                    vectors[vector_name] = models.SparseVector(
+                        indices=embedding.indices,
+                        values=embedding.values,
+                    )
+                else:
+                    raise ValueError(
+                        f"write_batch_points: embedding_backend '{embedding_backend}' "
+                        f"does not support sparse embeddings"
+                    )
+            elif embedding_kind in {"dense", "late"}:
+                vectors[vector_name] = embedding
+            else:
+                raise ValueError(
+                    f"write_batch_points: unsupported embedding kind '{embedding_kind}' "
+                    f"for encoder '{encoder}'"
                 )
-            }
-        else:
-            vectors = {encoder: embedding}
 
         if upsert_or_update == "upsert":
             points.append(
@@ -216,5 +248,3 @@ def write_batch_points(variant, batch, encoder, embeddings, upsert_or_update):
     else:
         client.update_vectors(collection_name=variant, points=points)
         print(f"write_batch_points: {variant}: encoder '{encoder}': updated {len(points)} points")
-
-    rag_volume.commit()

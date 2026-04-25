@@ -23,6 +23,7 @@ app = modal.App(EMAIL_AGENT_APP_NAME)
 def run_email_agent():
     import os
     from datetime import datetime
+    from zoneinfo import ZoneInfo
     from transformers import AutoTokenizer
     from helpers.decoder import count_tokens, truncate_to_tokens
 
@@ -31,9 +32,10 @@ def run_email_agent():
         get_unquoted_text
     )
     from config.decoder import MODEL_PROFILES, EMAIL_WRITER_PROFILE
+    from config.crawler_agent import CRAWL_DAY, CRAWL_MONTH
     from config.email_agent import (
         MAX_EMAILS,
-        CONTEXT_EMAILS_PER_FOLDER,
+        N_CONTEXT_EMAILS_PER_FOLDER,
         MAX_UNQUOTED_TOKENS_PER_CURRENT_EMAIL,
         MAX_UNQUOTED_TOKENS_PER_CONTEXT_EMAIL,
         MAX_QUOTED_TOKENS_PER_CURRENT_EMAIL,
@@ -56,6 +58,11 @@ def run_email_agent():
         save_drafts,
         mark_emails_as_read
     )
+
+    today = datetime.now(ZoneInfo("Europe/Madrid"))
+    if today.day == CRAWL_DAY and today.month == CRAWL_MONTH:
+        print("run_email_agent: today is crawling day, skipping email agent")
+        return
 
     # required env vars
     imap_server = os.getenv("IMAP_SERVER")
@@ -95,6 +102,8 @@ def run_email_agent():
         print("run_email_agent: MY_EMAIL_ADDRESSES must include at least one email")
         return
     
+    email_writer_profile_config = MODEL_PROFILES[EMAIL_WRITER_PROFILE].copy()
+
     # find decoder service
     try:
         decoder_app_name = email_writer_profile_config.pop("decoder_app_name")
@@ -125,7 +134,7 @@ def run_email_agent():
 
     # load additional context emails from inbox and sent folders
     context_inbox_emails = read_latest_emails(
-        max_emails=CONTEXT_EMAILS_PER_FOLDER,
+        max_emails=N_CONTEXT_EMAILS_PER_FOLDER,
         folder=INBOX_FOLDER,
         last_n_days=LAST_N_DAYS,
         imap_email=imap_email,
@@ -139,7 +148,7 @@ def run_email_agent():
     # reverse to match config/decoder's oldest to newest
     context_inbox_emails = list(reversed(context_inbox_emails))
     context_sent_emails = read_latest_emails(
-        max_emails=CONTEXT_EMAILS_PER_FOLDER,
+        max_emails=N_CONTEXT_EMAILS_PER_FOLDER,
         folder=SENT_FOLDER,
         last_n_days=LAST_N_DAYS,
         imap_email=imap_email,
@@ -161,7 +170,7 @@ def run_email_agent():
     # total context emails are the "set" of inbox emails, sent emails, and emails to answer
     # because we could have (rare albeit possible):
     # MAX_EMAILS = 1 (email 20)
-    # CONTEXT_EMAILS_PER_FOLDER = 20 (emails 0-19)
+    # N_CONTEXT_EMAILS_PER_FOLDER = 20 (emails 0-19)
     # normalized_subject(email_20) != normalized subjects of emails 0-19 so it becomes contextless
     combined_context_emails = context_inbox_emails + context_sent_emails + list(reversed(emails))
     # we require inbox+sent+emails (to reply to) to form the thread ids, despite later
@@ -326,7 +335,7 @@ def run_email_agent():
         # add context emails (if tokens fit) starting with first_email, then most recent to oldest, 
         # if email to reply to doesn't already contain quoted text
         # NOTE: this is a simplification, given email could have quoted text but not be the full
-        # thread. It can also happen CONTEXT_EMAILS_PER_FOLDER aren't enough to reconstruct as
+        # thread. It can also happen N_CONTEXT_EMAILS_PER_FOLDER aren't enough to reconstruct as
         # much as the quoted text in the email to answer, so we can't rely on it either. We'd have
         # to semantically or format-aware check if quoted text in the email to reply to contains
         # the full thread or they complement each other, but this is a fair approximation for
