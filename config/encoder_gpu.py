@@ -11,5 +11,6 @@ image = _base_image.pip_install(
     "llama-index",
     "fastembed-gpu",
     "qdrant-client>=1.14.2",
-    "huggingface_hub"
+    "huggingface_hub",
+    "sentence-transformers>=2.7.0",
 ).add_local_python_source("config", "helpers")

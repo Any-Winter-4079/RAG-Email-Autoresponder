@@ -160,7 +160,7 @@ JINA_FETCH_TIMEOUT = 30 # seconds
 CRAWL_PRINT_ONLY = False
 MODAL_TIMEOUT = 86400 # seconds
 
-CHUNK_OVERLAP = 0 # if not decoder chunking (e.g., if SentenceSplitter)
+CHUNK_OVERLAP = 0
 
 CRAWL_MINUTES = 0
 CRAWL_HOUR = 9
@@ -173,6 +173,8 @@ REUSE_CRAWL = True
 REUSE_CRAWL_PAST_CURRENT_YEAR = False
 REUSE_TIMESTAMP = "20260311_055008" # reuse this within the same year if REUSE_CRAWL, forever if REUSE_CRAWL_PAST_CURRENT_YEAR
 RECREATE_QDRANT_COLLECTIONS = True
+
+WRITE_POINTS_BATCH_SIZE = 1024
 
 FILE_START = "crawl_"
 RAW_PATH = f"{VOLUME_PATH}/raw"
@@ -192,9 +194,9 @@ LM_SUMMARY_SUBCHUNKS_PATH = f"{VOLUME_PATH}/lm_summary_subchunks"
 LM_Q_AND_A_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_valid_chunks"
 LM_Q_AND_A_FOR_Q_ONLY_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_for_q_only_valid_chunks"
 
-M3_ENCODE_ENCODERS = {"bge_m3": {"batch_size": 1024}}
+M3_ENCODE_ENCODERS = {"bge_m3": {"batch_size": 256}}
 if IS_FINETUNED:
-    M3_ENCODE_ENCODERS["bge_m3_muia"] = {"batch_size": 1024}
+    M3_ENCODE_ENCODERS["bge_m3_muia"] = {"batch_size": 256}
 
 ENCODE_VARIANTS = {
     "raw_chunks": {
@@ -202,10 +204,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+            "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
     "manually_cleaned_chunks": {
@@ -213,10 +217,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+             "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_cleaned_text_chunks": {
@@ -224,10 +230,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+             "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_summary_chunks": {
@@ -235,10 +243,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+             "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_q_and_a_chunks": {
@@ -246,10 +256,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+             "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
     "lm_q_and_a_for_q_only_chunks": {
@@ -257,10 +269,12 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            # "bge_small": {"batch_size": 1024},
+             "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
-            "jina_base_es": {"batch_size": 1024},
+            "qwen3_embedding_0_6b": {"batch_size": 32},
+            "jina_v5_text_small": {"batch_size": 32},
+            # "jina_base_es": {"batch_size": 1024},
         },
     },
 }

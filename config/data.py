@@ -1,44 +1,41 @@
 DATASET_PATH = "data/email_messages/messages.csv"
-KNOWLEDGE_BASE_MESSAGES_PATH = "data/knowledge_base_messages/messages_for_knowledge_base.jsonl"
+KNOWLEDGE_BASE_PATH = "data/knowledge_base/knowledge_base.json"
 THREAD_GROUPING_STRATEGY = "decoder_based"
 VALID_THREAD_GROUPING_STRATEGIES = {
     "rule_based",
     "decoder_based",
 }
-MESSAGES_WITH_THREADS_DATASET_PATH = (
-    f"data/email_messages/{THREAD_GROUPING_STRATEGY}/messages_with_threads.csv"
-)
-MESSAGES_WITH_THREADS_JSON_DATASET_PATH = (
-    f"data/email_messages/{THREAD_GROUPING_STRATEGY}/messages_with_threads.json"
-)
-WEAK_THREADS_BY_SIZE_DATASET_PATH = (
-    f"data/email_messages/{THREAD_GROUPING_STRATEGY}/weak_threads_by_size.json"
-)
-LM_THREADS_BY_SIZE_DATASET_PATH = (
-    f"data/email_messages/{THREAD_GROUPING_STRATEGY}/lm_threads_by_size.json"
-)
+THREADS_PATH = f"data/threads/{THREAD_GROUPING_STRATEGY}/threads.json"
+DISCARDED_THREADS_PATH = f"data/discarded_threads/{THREAD_GROUPING_STRATEGY}/discarded_internal_threads.json"
+
 SPLIT_DATASETS_DIR = f"data/split_datasets/{THREAD_GROUPING_STRATEGY}"
 TRAIN_THREADS_DATASET_PATH = f"{SPLIT_DATASETS_DIR}/train_threads.json"
 DEV_THREADS_DATASET_PATH = f"{SPLIT_DATASETS_DIR}/dev_threads.json"
 TEST_THREADS_DATASET_PATH = f"{SPLIT_DATASETS_DIR}/test_threads.json"
-DISCARDED_THREADS_DIR = f"data/discarded_threads/{THREAD_GROUPING_STRATEGY}"
-EMAIL_THREAD_CANDIDATES_PATH = "data/knowledge_base_messages/email_thread_candidates.json"
-EMAIL_LM_ABSTRACT_CHUNKS_PATH = "data/knowledge_base_messages/email_lm_abstract_chunks.jsonl"
-EMAIL_LM_SUMMARY_CHUNKS_PATH = "data/knowledge_base_messages/email_lm_summary_chunks.jsonl"
-EMAIL_LM_CLEANED_TEXT_CHUNKS_PATH = "data/knowledge_base_messages/email_lm_cleaned_text_chunks.jsonl"
-EMAIL_LM_Q_AND_A_CHUNKS_PATH = "data/knowledge_base_messages/email_lm_q_and_a_chunks.jsonl"
-EMAIL_KNOWLEDGE_BASE_VARIANT_TO_PATH = {
-    "email_lm_summary_chunks": EMAIL_LM_SUMMARY_CHUNKS_PATH,
-    "email_lm_cleaned_text_chunks": EMAIL_LM_CLEANED_TEXT_CHUNKS_PATH,
-    "email_lm_q_and_a_chunks": EMAIL_LM_Q_AND_A_CHUNKS_PATH,
-}
-EMAIL_KNOWLEDGE_BASE_VARIANT_TO_BASE_VARIANT = {
-    "email_lm_summary_chunks": "lm_summary_chunks",
-    "email_lm_cleaned_text_chunks": "lm_cleaned_text_chunks",
-    "email_lm_q_and_a_chunks": "lm_q_and_a_chunks",
-}
+
+THREAD_GROUPER_MAX_EMAILS = 16
+THREAD_GROUPER_MAX_RULE_BASED_THREADS = 8
+THREAD_GROUPER_PRE_DECODER_STATISTICS_PLOT_PATH = (
+    f"data/threads/{THREAD_GROUPING_STRATEGY}/thread_grouping_pre_decoder_statistics.png"
+)
+THREAD_GROUPER_POST_DECODER_STATISTICS_PLOT_PATH = (
+    f"data/threads/{THREAD_GROUPING_STRATEGY}/thread_grouping_post_decoder_statistics.png"
+)
+
+EMAIL_KNOWLEDGE_BASE_MAX_EMAILS = 12
+EMAIL_KNOWLEDGE_BASE_MAX_THREADS = 6
+EMAIL_KNOWLEDGE_BASE_PRE_CURATOR_STATISTICS_PLOT_PATH = (
+    "data/knowledge_base/email_knowledge_base_pre_curator_statistics.png"
+)
+EMAIL_KNOWLEDGE_BASE_POST_CURATOR_STATISTICS_PLOT_PATH = (
+    "data/knowledge_base/email_knowledge_base_post_curator_statistics.png"
+)
+EMAIL_KNOWLEDGE_BASE_FILE_START = "email_knowledge_base_"
+EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX = "email_"
+EMAIL_KNOWLEDGE_BASE_REUSE_CURATION = True
+EMAIL_KNOWLEDGE_BASE_REUSE_TIMESTAMP = None
 EMAIL_KNOWLEDGE_BASE_RECREATE_COLLECTIONS = True
-EMAIL_THREAD_MAX_THREADS_TO_CURATE = None
+
 SHUFFLE_SEED = 42
 UPM_DOMAINS = [
     "upm.es",

@@ -6,7 +6,6 @@ modal_secret = modal.Secret.from_name(SECRET_NAME)
 
 VOLUME_NAME = "muia-rag-volume"
 VOLUME_PATH = "/root/volume"
-QDRANT_PATH = f"{VOLUME_PATH}/qdrant"
 
 rag_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 

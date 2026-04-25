@@ -1,7 +1,7 @@
 import modal
 
 MAX_EMAILS = 2
-CONTEXT_EMAILS_PER_FOLDER = 80
+N_CONTEXT_EMAILS_PER_FOLDER = 80
 # < 0 to keep all tokens
 MAX_UNQUOTED_TOKENS_PER_CURRENT_EMAIL = 1500
 MAX_UNQUOTED_TOKENS_PER_CONTEXT_EMAIL = 1000
@@ -15,6 +15,25 @@ LAST_N_DAYS = 120
 SEND_TO_SELF = True
 SAVE_AS_DRAFT = True
 DRAFTS_FOLDER = "Drafts"
+
+TOP_K_PER_QUERY = 15
+TOP_K_AFTER_QUERY_FUSION = None
+TOP_K_AFTER_SOURCE_RRF = 5
+TOP_K_AFTER_RERANK = 5
+SOURCE_TO_RRF_ENCODER_WEIGHTS = {
+    "web": {
+        "splade": 1.0,
+        "bge_m3": 1.0,
+        "qwen3_embedding_0_6b": 1.0,
+        "jina_v5_text_small": 1.0,
+    },
+    "email": {
+        "splade": 1.0,
+        "bge_m3": 1.0,
+        "qwen3_embedding_0_6b": 1.0,
+        "jina_v5_text_small": 1.0,
+    },
+}
 
 EMAIL_HOUR = 9
 EMAIL_MINUTE = 0
