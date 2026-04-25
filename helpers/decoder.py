@@ -174,6 +174,8 @@ def extract_lm_cleaned_content(
 #############################################
 def extract_email_knowledge_base_curator_content(
         response,
+        thread_opening_tag,
+        thread_closing_tag,
         no_useful_information_opening_tag,
         no_useful_information_closing_tag,
         abstract_opening_tag,
@@ -191,36 +193,49 @@ def extract_email_knowledge_base_curator_content(
     if response is None:
         return None
 
-    no_useful_information = extract_matched_content(
+    threads = extract_matched_content(
         response,
-        no_useful_information_opening_tag,
-        no_useful_information_closing_tag,
+        thread_opening_tag,
+        thread_closing_tag,
     )
-    if no_useful_information is not None and len(no_useful_information) > 0:
-        return {
-            "no_useful_information": True,
-            "abstract": None,
-            "summary": None,
-            "cleanedtext": None,
-            "questions": [],
-            "answers": [],
-        }
+    if not threads:
+        return None
 
-    parsed_output = extract_lm_cleaned_content(
-        response,
-        abstract_opening_tag,
-        abstract_closing_tag,
-        summary_opening_tag,
-        summary_closing_tag,
-        cleanedtext_opening_tag,
-        cleanedtext_closing_tag,
-        question_opening_tag,
-        question_closing_tag,
-        answer_opening_tag,
-        answer_closing_tag,
-    )
-    parsed_output["no_useful_information"] = False
-    return parsed_output
+    parsed_threads = []
+    for thread_text in threads:
+        no_useful_information = extract_matched_content(
+            thread_text,
+            no_useful_information_opening_tag,
+            no_useful_information_closing_tag,
+        )
+        if no_useful_information:
+            parsed_threads.append({
+                "no_useful_information": True,
+                "abstract": None,
+                "summary": None,
+                "cleanedtext": None,
+                "questions": [],
+                "answers": [],
+            })
+            continue
+
+        parsed_output = extract_lm_cleaned_content(
+            thread_text,
+            abstract_opening_tag,
+            abstract_closing_tag,
+            summary_opening_tag,
+            summary_closing_tag,
+            cleanedtext_opening_tag,
+            cleanedtext_closing_tag,
+            question_opening_tag,
+            question_closing_tag,
+            answer_opening_tag,
+            answer_closing_tag,
+        )
+        parsed_output["no_useful_information"] = False
+        parsed_threads.append(parsed_output)
+
+    return parsed_threads
 
 #############################################
 # Helper 8: Extract query rewriter sections #
@@ -775,6 +790,8 @@ def run_local_lm_or_vlm(
     elif decoder_profile == EMAIL_KNOWLEDGE_BASE_CURATOR_PROFILE:
         output_text = extract_email_knowledge_base_curator_content(
             output_text,
+            THREAD_OPENING_TAG,
+            THREAD_CLOSING_TAG,
             NO_USEFUL_INFORMATION_OPENING_TAG,
             NO_USEFUL_INFORMATION_CLOSING_TAG,
             ABSTRACT_OPENING_TAG,

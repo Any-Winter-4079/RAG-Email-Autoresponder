@@ -1,18 +1,32 @@
+#######################################################################
+# Helper 1: Extract email addresses from one or two participant texts #
+#######################################################################
+def extract_emails_from_participant_raw_texts(
+        participant_1_raw_text,
+        participant_2_raw_text=None,
+        ):
+    import re
+
+    participant_emails = set()
+    for text in [participant_1_raw_text, participant_2_raw_text]:
+        if not text:
+            continue
+        for email in re.findall(r'[\w\.-]+@[\w\.-]+', text.lower()):
+            participant_emails.add(email)
+    return participant_emails
+
 #############################################################################
-# Helper 1: Check whether all email participants are internal UPM personnel #
+# Helper 2: Check whether all email participants are internal UPM personnel #
 #############################################################################
 def is_upm_internal(author, recipients, upm_domains):
-    import re
     # if all participants (author and recipients) aren't students / external people (e.g., they are professors):
     # return True to remove from the dataset
-    author_email = re.findall(r'[\w\.-]+@[\w\.-]+', author.lower()) # list
-    recipient_emails = re.findall(r'[\w\.-]+@[\w\.-]+', recipients.lower()) # list
-    all_emails = author_email + recipient_emails
+    all_emails = list(extract_emails_from_participant_raw_texts(author, recipients))
     return all(any(f"@{domain}" in email for domain in upm_domains) for email in all_emails) and len(all_emails) > 0
 
-###################################################################
-# Helper 2: Normalize an email subject by removing reply prefixes #
-###################################################################
+#####################################
+# Helper 3: Normalize email subject #
+#####################################
 def normalize_subject(subject):
     # convert to lowercase and remove reply/forward prefixes
     normalized = subject.strip().lower()
@@ -26,150 +40,659 @@ def normalize_subject(subject):
                 prefix_removed = True
     return normalized
 
-####################################################
-# Helper 3: Normalize an email body for comparison #
-####################################################
+#################################################
+# Helper 4: Normalize email body for comparison #
+#################################################
 def normalize_email_body(body):
     return body.replace("\n", " ").replace("\r", " ").strip().lower()
 
-#######################################################################
-# Helper 4: Extract participant email addresses from author/to fields #
-#######################################################################
-def extract_participant_emails(author_raw_text, recipients_raw_text):
+##################################################################
+# Helper 5: Split an email body into unquoted and quoted content #
+##################################################################
+def get_unquoted_text(body, return_quoted=False):
     import re
+    # get 1st match
+    match = re.search(
+        r"\s*(en .*?\b\d{4}\b.* escribió:|en .*?<[^>]*@[^>]*>.* escribió:|on .*?\b\d{4}\b.* wrote[:：]|on .*?<[^>]*@[^>]*>.* wrote[:：]|de:.*<[^>]*@[^>]*>.*enviado.*para:.*<[^>]*@[^>]*>.*asunto:|de:.*enviado:.*para:.*asunto:)",
+        body.lower(),
+        flags=re.IGNORECASE | re.DOTALL
+    )
+    if match:
+        unquoted = body[:match.start()]
+        quoted = body[match.start():]
+    else:
+        unquoted = body
+        quoted = ""
+    unquoted = unquoted.strip()
+    quoted = quoted.strip()
+    return (unquoted, quoted) if return_quoted else unquoted
 
-    participants = set()
-    for text in [author_raw_text, recipients_raw_text]:
-        if not text:
+####################################################################
+# Helper 6: Detect template text in the unquoted portion of a body #
+####################################################################
+def has_template_in_unquoted(body, templates):
+    unquoted = normalize_email_body(get_unquoted_text(body))
+    return any(template in unquoted for template in templates)
+
+####################################################################
+# Helper 7: Count folderURI values and print stage-by-stage deltas #
+####################################################################
+def get_and_print_folder_uri_counts(folder_uri_column, title, previous_counts=None):
+    from collections import Counter
+
+    folder_uri_counts = Counter(folder_uri_column)
+    print(f"\nget_and_print_folder_uri_counts: {title}")
+    # print Alumnos/Seminarios/... counts from folderURI
+    for uri, count in folder_uri_counts.items():
+        diff_text = ""
+        if previous_counts is not None:
+            diff = count - previous_counts.get(uri, 0)
+            diff_text = " (==)" if diff == 0 else f" ({diff:+d})"
+        print(
+            "get_and_print_folder_uri_counts: "
+            f"{uri.split('/')[-1]}: {count} messages{diff_text}"
+        )
+    total_count = sum(folder_uri_counts.values())
+    total_diff_text = ""
+    if previous_counts is not None:
+        total_diff = total_count - sum(previous_counts.values())
+        total_diff_text = " (==)" if total_diff == 0 else f" ({total_diff:+d})"
+    print(
+        "get_and_print_folder_uri_counts: "
+        f"Total: {total_count} messages{total_diff_text}"
+    )
+    return folder_uri_counts
+
+###########################################################################
+# Helper 8: Assign dataset thread IDs via subject and participant overlap #
+###########################################################################
+def assign_thread_ids_by_subject_and_participant_overlap_for_dataset(rows, my_email_addresses, n_lookback_window_rows):
+    folder_uri_index = rows[0].index("folderURI")
+    subject_index = rows[0].index("c1subject")
+    body_index = rows[0].index("c0body")
+    author_index = rows[0].index("c3author")
+    recipients_index = rows[0].index("c4recipients")
+
+    my_email_addresses = set(
+        email.lower()
+        for email in my_email_addresses
+    )
+
+    thread_id_to_metadata = {}
+    row_thread_ids = []
+    next_thread_id = 1
+
+    for row_index, row in enumerate(rows[1:]):
+        folder_uri = row[folder_uri_index]
+        subject = row[subject_index]
+        normalized_subject = normalize_subject(subject)
+        author = row[author_index]
+        recipients = row[recipients_index]
+        all_participants = extract_emails_from_participant_raw_texts(author, recipients)
+        participants = {email for email in all_participants if email not in my_email_addresses}
+
+        candidate_thread_ids = []
+        for thread_id, metadata in thread_id_to_metadata.items():
+            if metadata["folder_uri"] != folder_uri:
+                continue
+            if metadata["normalized_subject"] != normalized_subject:
+                continue
+            if row_index - metadata["last_row_index"] > n_lookback_window_rows:
+                continue
+            if participants and metadata["participants"] and not participants.intersection(metadata["participants"]):
+                continue
+            candidate_thread_ids.append(thread_id)
+
+        if candidate_thread_ids:
+            best_thread_id = max(
+                candidate_thread_ids,
+                key=lambda thread_id: (
+                    len(participants.intersection(thread_id_to_metadata[thread_id]["participants"])),
+                    thread_id_to_metadata[thread_id]["last_row_index"],
+                ),
+            )
+            thread_id_to_metadata[best_thread_id]["participants"].update(participants)
+            thread_id_to_metadata[best_thread_id]["last_row_index"] = row_index
+            row_thread_ids.append(best_thread_id)
+        else:
+            thread_id = next_thread_id
+            next_thread_id += 1
+            thread_id_to_metadata[thread_id] = {
+                "folder_uri": folder_uri,
+                "normalized_subject": normalized_subject,
+                "participants": set(participants),
+                "last_row_index": row_index,
+            }
+            row_thread_ids.append(thread_id)
+
+    ordered_thread_ids = []
+    thread_id_to_rows = {}
+    for row, thread_id in zip(rows[1:], row_thread_ids):
+        if thread_id not in thread_id_to_rows:
+            ordered_thread_ids.append(thread_id)
+            thread_id_to_rows[thread_id] = []
+        thread_id_to_rows[thread_id].append(row)
+
+    threads = []
+    for thread_id in ordered_thread_ids:
+        thread_rows = thread_id_to_rows[thread_id]
+        threads.append({
+            "folder_uri": thread_id_to_metadata[thread_id]["folder_uri"],
+            "thread_id": thread_id,
+            "thread_size": len(thread_rows),
+            "emails": [
+                {
+                    "subject": row[subject_index],
+                    "body": row[body_index],
+                    "author": row[author_index],
+                    "recipients": row[recipients_index],
+                }
+                for row in thread_rows
+            ],
+        })
+
+    return threads
+
+#########################################################
+# Helper 9: Reconstruct dataset thread IDs with decoder #
+#########################################################
+def assign_thread_ids_with_decoder_for_dataset(
+        threads,
+        run_thread_grouper,
+        thread_grouper_model_config,
+        task_description_start,
+        example_message,
+        prompt_template,
+        max_emails_per_batch,
+        max_rule_based_threads_per_batch,
+        max_concurrent_batches,
+        max_input_tokens,
+        pre_decoder_statistics_plot_path=None,
+        post_decoder_statistics_plot_path=None,
+        ):
+    import asyncio
+    from transformers import AutoProcessor, AutoTokenizer
+    from config.decoder import GEMMA4_MODEL_FAMILY
+    from helpers.decoder import count_tokens
+
+    def build_prompt_from_batch_emails(batch_emails):
+        prompt = prompt_template.format(
+            task_description_start=task_description_start.format(
+                email_count=len(batch_emails)
+            ),
+            example_message=example_message,
+            emails_section="\n".join(str(email) for email in batch_emails),
+        )
+        return prompt
+
+    # get tokenizer
+    if (
+        thread_grouper_model_config.get("is_vision_model")
+        or thread_grouper_model_config.get("model_family") == GEMMA4_MODEL_FAMILY
+    ):
+        thread_grouper_processor = AutoProcessor.from_pretrained(
+            thread_grouper_model_config["model_name_or_path"],
+            trust_remote_code=True,
+        )
+        thread_grouper_tokenizer = thread_grouper_processor.tokenizer
+    else:
+        thread_grouper_tokenizer = AutoTokenizer.from_pretrained(
+            thread_grouper_model_config["model_name_or_path"],
+            trust_remote_code=True,
+        )
+
+    post_decoder_threads = [] # the final threads
+    bypass_threads = [] # part of the final threads
+    batches = [] # batches for the decoder, the result of which will complete the final threads; internally, per batch, keeps track of batch threads, and prompt for batch
+    batch = [] # list of one or several threads
+    batch_statistics = []
+    bypass_statistics = {
+        "email_limit": {"n_threads": 0, "n_emails": 0, "email_counts": []},
+        "token_limit": {"n_threads": 0, "n_emails": 0, "prompt_tokens": []},
+    }
+
+    for thread in threads:
+        #add threadID to each
+        # since decoder expects threadID
+        # on each email, not per group of emails
+        thread_emails = [
+            {
+                **email,
+                "threadID": thread["thread_id"],
+            }
+            for email in thread["emails"]
+        ]
+        thread_email_count = len(thread_emails)
+        batch_prompt = build_prompt_from_batch_emails(thread_emails)
+        n_thread_prompt_tokens =  count_tokens(
+            thread_grouper_tokenizer,
+            batch_prompt
+        )
+
+        # the thread can:
+        # 1, bypass the decoder, due to its size in emails
+        # 2, bypass the decoder, due to its size in tokens
+        # 3, be added to a (growing) candidate batch, until
+        # it no longer fits, then the batch is finalized
+        # and a new one starts
+
+        # if the current thread is too large (email count-wise) even for a single decoder batch
+        if thread_email_count > max_emails_per_batch:
+            # add it as a bypass
+            bypass_threads.append(thread)
+            # update statistics
+            bypass_statistics["email_limit"]["n_threads"] += 1
+            bypass_statistics["email_limit"]["n_emails"] += thread_email_count
+            bypass_statistics["email_limit"]["email_counts"].append(
+                thread_email_count
+            )
+            # move on to another thread
             continue
-        for email in re.findall(r'[\w\.-]+@[\w\.-]+', text.lower()):
-            participants.add(email)
-    return participants
 
-############################################################
-# Helper 5: Save a pie-chart distribution as an image file #
-############################################################
-def save_pie_chart_distribution(labels, sizes, title, output_path):
+        # if the current thread is too large (token-wise) even for a single decoder batch
+        if n_thread_prompt_tokens > max_input_tokens:
+            # add it as a bypass
+            bypass_threads.append(thread)
+            # update statistics
+            bypass_statistics["token_limit"]["n_threads"] += 1
+            bypass_statistics["token_limit"]["n_emails"] += thread_email_count
+            bypass_statistics["token_limit"]["prompt_tokens"].append(
+                n_thread_prompt_tokens
+            )
+            # move on to another thread
+            continue
+
+        # if the current thread could fit in a batch, check if it can fit in the *current* batch:
+        # - if it can, add it
+        # - if it can't, check if the current batch is empty:
+        #   - if it is, add thread to the batch
+        #   - if not, finalize existing batch and open a new one with the current thread
+        batch_emails = [email for thread in batch for email in thread["emails"]]
+        n_hypothetical_batch_threads = len(batch) + 1
+        n_hypothetical_batch_emails = len(batch_emails) + len(thread_emails)
+        hypothetical_batch_prompt = build_prompt_from_batch_emails(batch_emails + thread_emails)
+        n_hypothetical_batch_prompt_tokens = count_tokens(thread_grouper_tokenizer, hypothetical_batch_prompt)
+        fits = (
+                (thread["folder_uri"] == batch[-1]["folder_uri"] if len(batch) > 0 else True)
+                and n_hypothetical_batch_emails <= max_emails_per_batch
+                and n_hypothetical_batch_threads <= max_rule_based_threads_per_batch
+                and n_hypothetical_batch_prompt_tokens <= max_input_tokens
+            )
+        if fits:
+            # ensure threadID is per email
+            thread["emails"] = thread_emails
+            # then append thread
+            batch.append(thread)
+        else:
+            if len(batch) == 0:
+                # ensure threadID is per email
+                thread["emails"] = thread_emails
+                # then append thread
+                batch = [thread]
+            else:
+                # build prompt since it includes the emails themselves
+                batch_emails = [email for thread in batch for email in thread["emails"]]
+                batch_prompt = build_prompt_from_batch_emails(batch_emails)
+                # then finalize
+                batches.append((batch, batch_prompt))
+                # update statistics
+                n_batch_prompt_tokens =  count_tokens(
+                    thread_grouper_tokenizer,
+                    batch_prompt
+                )
+                batch_statistics.append({
+                    "n_emails": len(batch_emails),
+                    "n_threads": len(batch),
+                    "n_tokens": n_batch_prompt_tokens
+                })
+                # reset batch starting with the current thread, ensuring threadID is per email
+                thread["emails"] = thread_emails
+                batch = [thread]
+        
+    # close the final batch (if open)
+    if batch:
+        batch_emails = [email for thread in batch for email in thread["emails"]]
+        batch_prompt = build_prompt_from_batch_emails(batch_emails)
+        batches.append((batch, batch_prompt))
+        # update statistics
+        n_batch_prompt_tokens =  count_tokens(
+            thread_grouper_tokenizer,
+            batch_prompt
+        )
+        batch_statistics.append({
+            "n_emails": len(batch_emails),
+            "n_threads": len(batch),
+            "n_tokens": n_batch_prompt_tokens
+        })
+
+    # plot batch/bypass summary
+    if pre_decoder_statistics_plot_path:
+        save_pre_decoder_statistics_plot(
+            batch_statistics,
+            bypass_statistics,
+            title="Decoder batch vs bypass statistics",
+            output_path=pre_decoder_statistics_plot_path,
+            max_input_tokens=max_input_tokens,
+        )
+    
+    async def run_batch(prompt):
+        return await run_thread_grouper.remote.aio(
+            context=[],
+            current_turn_input_text=prompt,
+            current_turn_image_in_bytes=None,
+            **thread_grouper_model_config,
+        )
+
+    async def run_all_batches():
+        if not batches:
+            return []
+        semaphore = asyncio.Semaphore(max_concurrent_batches)
+
+        async def run_batch_with_semaphore(prompt):
+            async with semaphore:
+                return await run_batch(prompt)
+
+        return await asyncio.gather(
+            *(run_batch_with_semaphore(batch_prompt) for _, batch_prompt in batches),
+            return_exceptions=True,
+        )
+
+    batch_results = asyncio.run(run_all_batches())
+
+    decoder_statistics = {
+        "n_failed_exception_batches": 0,
+        "n_failed_oom_batches": 0,
+        "n_failed_timeout_batches": 0,
+        "n_failed_empty_output_batches": 0,
+        "n_failed_short_output_batches": 0,
+        "n_kept_exact_output_batches": 0,
+        "n_kept_expanded_output_batches": 0,
+    }
+    # after running the decoder, construct
+    # final threads
+
+    # 1- add bypassed threads
+    post_decoder_threads += bypass_threads
+
+    # 2- add the decoder threads and/or update stats
+    for batch, batch_result in zip(batches, batch_results):
+        batch_threads = batch[0]
+        batch_email_count = sum(len(batch_thread["emails"]) for batch_thread in batch_threads)
+
+        if isinstance(batch_result, Exception):
+            decoder_statistics["n_failed_exception_batches"] += 1
+            batch_result_text = str(batch_result).lower()
+            if "out of memory" in batch_result_text or "oom" in batch_result_text:
+                decoder_statistics["n_failed_oom_batches"] += 1
+            if "timeout" in batch_result_text or "timed out" in batch_result_text:
+                decoder_statistics["n_failed_timeout_batches"] += 1
+            continue
+
+        parsed_threads, prompt_text = batch_result
+        if not parsed_threads:
+            decoder_statistics["n_failed_empty_output_batches"] += 1
+            continue
+
+        n_output_messages = sum(
+            len(thread["messages"])
+            for thread in parsed_threads
+        )
+        if n_output_messages < batch_email_count:
+            decoder_statistics["n_failed_short_output_batches"] += 1
+            continue
+        if n_output_messages == batch_email_count:
+            decoder_statistics["n_kept_exact_output_batches"] += 1
+        else:
+            decoder_statistics["n_kept_expanded_output_batches"] += 1
+
+        # since each batch has some common folder_uri, we
+        # can take any of them, here the last thread's
+        folder_uri = batch_threads[-1]["folder_uri"]
+        for thread in parsed_threads:
+            post_decoder_threads.append({
+                "folder_uri": folder_uri,
+                "thread_size": len(thread["messages"]),
+                "emails": [
+                    {
+                        "subject": message.get("subject"),
+                        "body": message.get("body"),
+                        "author": message.get("from"),
+                        "recipients": message.get("to"),
+                    }
+                    for message in thread["messages"]
+                ],
+            })
+
+    # after we have them all, add a unique id
+    for thread_id, thread in enumerate(post_decoder_threads):
+        thread["thread_id"] = thread_id
+
+    # finally, plot post-decoder summary
+    if post_decoder_statistics_plot_path:
+        save_post_decoder_statistics_plot(
+            n_rule_based_thread_count=len(threads),
+            n_rule_based_threads_sent_to_lm=sum([len(batch[0]) for batch in batches]),
+            n_planned_batches=len(batches),
+            bypass_statistics=bypass_statistics,
+            **decoder_statistics,
+            title="Thread grouping post-decoder statistics",
+            output_path=post_decoder_statistics_plot_path
+        )
+
+    return post_decoder_threads
+
+#############################################
+# Helper 10: Lighten a hex color with white #
+#############################################
+def lighten_hex_color(hex_color, mix_with_white=0.45):
+    hex_color = hex_color.lstrip("#")
+    red = int(hex_color[0:2], 16)
+    green = int(hex_color[2:4], 16)
+    blue = int(hex_color[4:6], 16)
+    red = int(red + (255 - red) * mix_with_white)
+    green = int(green + (255 - green) * mix_with_white)
+    blue = int(blue + (255 - blue) * mix_with_white)
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+########################################################################
+# Helper 11: Save thread-grouping pre-decoder statistics plot as image #
+########################################################################
+def save_pre_decoder_statistics_plot(
+        batch_statistics,
+        bypass_statistics,
+        title,
+        output_path,
+        max_input_tokens=None,
+        mode="thread_grouper",
+        ):
+    from collections import Counter
     from pathlib import Path
     import matplotlib.pyplot as plt
 
-    pie_colors = [
-        "#FFAF00",
-        "#F46920",
-        "#F857C1",
-        "#F53255",
-        "#29BDFD",
-        "#00CBBF",
-        "#01C159",
-        "#9DCA1C",
-    ]
-    pie_alpha = 0.78
-    fig, ax = plt.subplots(figsize=(8, 8))
-    wedges, *_ = ax.pie(
-        sizes,
-        labels=labels,
-        autopct='%1.1f%%', # one decimal place
-        colors=pie_colors[:len(labels)],
-        counterclock=False
-    )
-    for wedge in wedges:
-        wedge.set_alpha(pie_alpha)
-    ax.set_title(title)
-    ax.axis("equal")
+    if not batch_statistics and not bypass_statistics:
+        return
+
+    batch_email_counts = [batch_stat["n_emails"] for batch_stat in batch_statistics]
+    batch_thread_counts = [batch_stat["n_threads"] for batch_stat in batch_statistics]
+    batch_prompt_tokens = [batch_stat["n_tokens"] for batch_stat in batch_statistics]
+    email_limit_bypass_statistics = bypass_statistics["email_limit"]
+    token_limit_bypass_statistics = bypass_statistics["token_limit"]
+
+    email_count_to_n_batches = Counter(batch_email_counts)
+    thread_count_to_n_batches = Counter(batch_thread_counts)
+    sorted_prompt_tokens = sorted(batch_prompt_tokens)
+    token_x_values = list(range(1, len(sorted_prompt_tokens) + 1))
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(
+        nrows=2,
+        ncols=2,
+        figsize=(14, 9.5),
+        gridspec_kw={"height_ratios": [1.0, 1.0]},
+    )
+    fig.suptitle(title, fontsize=17)
+    axes = axes.flatten()
+
+    email_bar_color = lighten_hex_color("#00CBBF")
+    thread_bar_color = lighten_hex_color("#F46920")
+    token_line_color = lighten_hex_color("#F53255")
+    token_limit_color = lighten_hex_color("#4C566A")
+    email_limit_bypass_color = lighten_hex_color("#FFAF00")
+    token_limit_bypass_color = lighten_hex_color("#9DCA1C")
+
+    email_x_values = sorted(email_count_to_n_batches.keys())
+    email_y_values = [email_count_to_n_batches[n_emails] for n_emails in email_x_values]
+    email_bars = axes[0].bar(
+        email_x_values,
+        email_y_values,
+        width=0.85,
+        color=email_bar_color,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    axes[0].set_title("Batches by email count")
+    axes[0].set_xlabel("Emails per batch", fontsize=13)
+    axes[0].set_ylabel("Number of batches", fontsize=13)
+    axes[0].set_xticks(email_x_values)
+    axes[0].tick_params(axis="both", labelsize=12)
+    axes[0].grid(axis="y", alpha=0.25)
+    for bar in email_bars:
+        axes[0].text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{int(bar.get_height())}",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+
+    thread_x_values = sorted(thread_count_to_n_batches.keys())
+    thread_y_values = [thread_count_to_n_batches[n_threads] for n_threads in thread_x_values]
+    thread_bars = axes[1].bar(
+        thread_x_values,
+        thread_y_values,
+        width=0.85,
+        color=thread_bar_color,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    if mode == "thread_grouper":
+        axes[1].set_title("Batches by thread count")
+        axes[1].set_xlabel("Rule-based threads per batch", fontsize=13)
+    else:
+        axes[1].set_title("Batches by thread-chunk count")
+        axes[1].set_xlabel("Thread chunks per batch", fontsize=13)
+    axes[1].set_ylabel("Number of batches", fontsize=13)
+    axes[1].set_xticks(thread_x_values)
+    axes[1].tick_params(axis="both", labelsize=12)
+    axes[1].grid(axis="y", alpha=0.25)
+    for bar in thread_bars:
+        axes[1].text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            f"{int(bar.get_height())}",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+
+    if sorted_prompt_tokens:
+        axes[2].plot(
+            token_x_values,
+            sorted_prompt_tokens,
+            color=token_line_color,
+            marker="o",
+            linewidth=2.0,
+            markersize=4.2,
+        )
+    if max_input_tokens is not None:
+        axes[2].axhline(
+            max_input_tokens,
+            color=token_limit_color,
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Token limit ({max_input_tokens})",
+        )
+    if sorted_prompt_tokens or max_input_tokens is not None:
+        axes[2].legend(fontsize=12)
+    axes[2].set_title("Sorted prompt tokens per batch")
+    axes[2].set_xlabel("Batch rank (sorted by tokens)", fontsize=13)
+    axes[2].set_ylabel("Prompt tokens", fontsize=13)
+    axes[2].tick_params(axis="both", labelsize=12)
+    axes[2].grid(axis="y", alpha=0.25)
+
+    bypass_reason_labels = [
+        "Email limit",
+        "Token limit",
+    ]
+    if mode == "thread_grouper":
+        bypass_reason_thread_counts = [
+            email_limit_bypass_statistics["n_threads"],
+            token_limit_bypass_statistics["n_threads"],
+        ]
+    else:
+        bypass_reason_thread_counts = [
+            email_limit_bypass_statistics["n_events"],
+            token_limit_bypass_statistics["n_events"],
+        ]
+    bypass_bars = axes[3].bar(
+        bypass_reason_labels,
+        bypass_reason_thread_counts,
+        color=[email_limit_bypass_color, token_limit_bypass_color],
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    if mode == "thread_grouper":
+        axes[3].set_title("Bypassed threads by reason")
+        axes[3].set_ylabel("Number of bypassed threads", fontsize=13)
+    else:
+        axes[3].set_title("Split events by reason")
+        axes[3].set_ylabel("Number of split events", fontsize=13)
+    axes[3].tick_params(axis="both", labelsize=12)
+    axes[3].grid(axis="y", alpha=0.25)
+    if mode == "thread_grouper":
+        bypass_bar_label_texts = [
+            f"{email_limit_bypass_statistics['n_threads']} threads\n{email_limit_bypass_statistics['n_emails']} emails",
+            f"{token_limit_bypass_statistics['n_threads']} threads\n{token_limit_bypass_statistics['n_emails']} emails",
+        ]
+    else:
+        bypass_bar_label_texts = [
+            f"{email_limit_bypass_statistics['n_events']} events",
+            f"{token_limit_bypass_statistics['n_events']} events",
+        ]
+    for bar, label_text in zip(bypass_bars, bypass_bar_label_texts):
+        axes[3].text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height(),
+            label_text,
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+    print(f"save_pre_decoder_statistics_plot: saved plot to {output_path}")
 
-####################################################################
-# Helper 6: Save a stacked size-distribution plot as an image file #
-####################################################################
-def save_stacked_size_distribution_plot(
-        size_counts,
-        inbound_email_counts,
-        outbound_email_counts,
+###########################################################################
+# Helper 12: Save 3D folderURI dropped-message distribution plot as image #
+###########################################################################
+def save_folder_uri_drop_3d_plot(
+        folder_uri_count_history,
         title,
-        x_label,
-        y_label,
         output_path,
+        excluded_phase_labels=None,
         ):
     from pathlib import Path
     import matplotlib.pyplot as plt
-
-    if not size_counts:
-        return
-
-    x_values = sorted(size_counts.keys())
-    count_values = [size_counts[size] for size in x_values]
-    inbound_bar_heights = []
-    outbound_bar_heights = []
-    for size, count_value in zip(x_values, count_values):
-        inbound_email_count = inbound_email_counts[size]
-        outbound_email_count = outbound_email_counts[size]
-        total_email_count = inbound_email_count + outbound_email_count
-        inbound_ratio = (
-            inbound_email_count / total_email_count
-            if total_email_count
-            else 0
-        )
-        outbound_ratio = (
-            outbound_email_count / total_email_count
-            if total_email_count
-            else 0
-        )
-        inbound_bar_heights.append(count_value * inbound_ratio)
-        outbound_bar_heights.append(count_value * outbound_ratio)
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(14, 6.5))
-    inbound_color = "#F46920"
-    outbound_color = "#F53255"
-    ax.bar(
-        x_values,
-        inbound_bar_heights,
-        width=0.85,
-        color=inbound_color,
-        alpha=0.80,
-        edgecolor="white",
-        linewidth=0.6,
-        label="Incoming share",
-    )
-    bars = ax.bar(
-        x_values,
-        outbound_bar_heights,
-        width=0.85,
-        bottom=inbound_bar_heights,
-        color=outbound_color,
-        alpha=0.80,
-        edgecolor="white",
-        linewidth=0.6,
-        label="Outgoing share",
-    )
-    ax.set_title(title)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_xticks(x_values)
-    ax.legend()
-    for bar, count_value in zip(bars, count_values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            count_value,
-            f"{count_value}",
-            ha="center",
-            va="bottom",
-        )
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=180)
-    plt.close(fig)
-
-####################################################################################
-# Helper 7: Save a 3D folderURI dropped-message distribution plot as an image file #
-####################################################################################
-def save_folder_uri_drop_3d_plot(folder_uri_count_history, output_path, excluded_phase_labels=None):
-    from pathlib import Path
-    import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
+    # noqa: F401 tells Ruff/Pyflakes-style linters to ignore the unused-import warning here
+    # Importing Axes3D registers Matplotlib's "3d" projection type, which makes:
+    # ax = fig.add_subplot(111, projection="3d")
+    # work below
     from mpl_toolkits.mplot3d import Axes3D # noqa: F401
 
     output_path = Path(output_path)
@@ -232,547 +755,851 @@ def save_folder_uri_drop_3d_plot(folder_uri_count_history, output_path, excluded
         )
         for x_value, drop in zip(x_values, drops):
             if drop > 0:
-                ax.text(x_value, phase_index, drop, str(drop), ha="center", va="bottom")
+                ax.text(
+                    x_value,
+                    phase_index,
+                    drop,
+                    str(drop),
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                )
 
-    ax.set_title("3D Folder Drop Plot")
+    ax.set_title(title, fontsize=16)
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.set_zlabel("Dropped Emails")
+    ax.set_zlabel("Dropped emails", fontsize=13)
     ax.set_xticks(x_values)
     ax.set_xticklabels(folder_labels, rotation=30, ha="right")
     ax.set_yticks(range(len(phase_labels)))
     ax.set_yticklabels(phase_labels)
+    ax.tick_params(axis="x", labelsize=12)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.tick_params(axis="z", labelsize=12)
     ax.set_zlim(bottom=0)
+    pane_face_color = (1.0, 1.0, 1.0, 0.96)
+    pane_edge_color = (0.93, 0.93, 0.93, 1.0)
+    grid_color = (0.88, 0.88, 0.88, 0.7)
+    for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
+        axis.set_pane_color(pane_face_color)
+        if hasattr(axis, "pane"):
+            axis.pane.set_facecolor(pane_face_color)
+            axis.pane.set_edgecolor(pane_edge_color)
+        if hasattr(axis, "_axinfo") and "grid" in axis._axinfo:
+            axis._axinfo["grid"]["color"] = grid_color
     ax.view_init(elev=25, azim=-50)
     fig.subplots_adjust(left=0.02, right=0.95, bottom=0.18, top=0.92)
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     print(f"save_folder_uri_drop_3d_plot: saved 3D folder drop plot to {output_path}")
 
-####################################################################
-# Helper 8: Count folderURI values and print stage-by-stage deltas #
-####################################################################
-def get_and_print_folder_uri_counts(folder_uri_column, title, previous_counts=None):
-    from collections import Counter
+#########################################################################
+# Helper 13: Save thread-grouping post-decoder statistics plot as image #
+#########################################################################
+def save_post_decoder_statistics_plot(
+        n_rule_based_thread_count,
+        n_rule_based_threads_sent_to_lm,
+        n_planned_batches,
+        bypass_statistics,
+        n_failed_exception_batches,
+        n_failed_oom_batches,
+        n_failed_timeout_batches,
+        n_failed_empty_output_batches,
+        n_failed_short_output_batches,
+        n_kept_exact_output_batches,
+        n_kept_expanded_output_batches,
+        title,
+        output_path,
+        mode="thread_grouper",
+        n_failed_long_output_batches=0,
+        n_split_threads=0,
+        n_thread_chunks=0,
+        ):
+    from pathlib import Path
+    import matplotlib.pyplot as plt
 
-    folder_uri_counts = Counter(folder_uri_column)
-    print(f"\nget_and_print_folder_uri_counts: {title}")
-    # print Alumnos/Seminarios/... counts from folderURI
-    for uri, count in folder_uri_counts.items():
-        diff_text = ""
-        if previous_counts is not None:
-            diff = count - previous_counts.get(uri, 0)
-            diff_text = " (==)" if diff == 0 else f" ({diff:+d})"
-        print(
-            "get_and_print_folder_uri_counts: "
-            f"{uri.split('/')[-1]}: {count} messages{diff_text}"
-        )
-    total_count = sum(folder_uri_counts.values())
-    total_diff_text = ""
-    if previous_counts is not None:
-        total_diff = total_count - sum(previous_counts.values())
-        total_diff_text = " (==)" if total_diff == 0 else f" ({total_diff:+d})"
-    print(
-        "get_and_print_folder_uri_counts: "
-        f"Total: {total_count} messages{total_diff_text}"
+    failed_other_exception_batches = (
+        n_failed_exception_batches
+        - n_failed_oom_batches
+        - n_failed_timeout_batches
     )
-    return folder_uri_counts
+    if failed_other_exception_batches < 0:
+        raise ValueError(
+            "save_post_decoder_statistics_plot: invalid failure counts:\n"
+            f"\tn_failed_exception_batches={n_failed_exception_batches}\n"
+            f"\tn_failed_oom_batches={n_failed_oom_batches}\n"
+            f"\tn_failed_timeout_batches={n_failed_timeout_batches}"
+        )
 
-##########################################################################
-# Helper 9: Assign thread IDs to contiguous blocks with the same subject #
-##########################################################################
-def assign_thread_ids_by_subject_blocks(emails):
-    if not emails:
-        return []
+    if mode == "thread_grouper":
+        kept_batches = n_kept_exact_output_batches + n_kept_expanded_output_batches
+        failed_batches = (
+            n_failed_exception_batches
+            + n_failed_short_output_batches
+            + n_failed_empty_output_batches
+        )
+    else:
+        kept_batches = n_kept_exact_output_batches
+        failed_batches = (
+            n_failed_exception_batches
+            + n_failed_empty_output_batches
+            + n_failed_short_output_batches
+            + n_failed_long_output_batches
+        )
+    if kept_batches + failed_batches != n_planned_batches:
+        raise ValueError(
+            "save_post_decoder_statistics_plot: planned LM batch count mismatch:\n"
+            f"\tn_planned_batches={n_planned_batches}\n"
+            f"\tkept_batches={kept_batches}\n"
+            f"\tfailed_batches={failed_batches}"
+        )
+    email_limit_bypass_statistics = bypass_statistics["email_limit"]
+    token_limit_bypass_statistics = bypass_statistics["token_limit"]
 
-    emails_to_process = list(emails)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    thread_id = 0
-    first_subject = emails_to_process[0].get("subject") or ""
-    current_subject = normalize_subject(first_subject)
-    current_block_emails = []
-    emails_with_threads = []
+    fig = plt.figure(figsize=(13.5, 8.5))
+    grid = fig.add_gridspec(
+        nrows=2,
+        ncols=2,
+        height_ratios=[1.15, 1.0],
+    )
+    outcome_ax = fig.add_subplot(grid[0, :])
+    exception_ax = fig.add_subplot(grid[1, 0])
+    discarded_ax = fig.add_subplot(grid[1, 1])
+    fig.suptitle(title, fontsize=17)
 
-    def flush_block():
-        nonlocal thread_id, current_block_emails
-        thread_id += 1
-        for block_email in current_block_emails:
-            email_with_thread = block_email.copy()
-            email_with_thread["threadID"] = thread_id
-            emails_with_threads.append(email_with_thread)
-        current_block_emails = []
+    if mode == "thread_grouper":
+        top_bar_specs = [(
+            "Planned LM batches",
+            [
+            ("Kept: exact output", n_kept_exact_output_batches, lighten_hex_color("#2E8B57")),
+            ("Kept: expanded output", n_kept_expanded_output_batches, lighten_hex_color("#8BC34A")),
+            ("Exception", n_failed_exception_batches, lighten_hex_color("#F46920")),
+            ("Discarded: short output", n_failed_short_output_batches, lighten_hex_color("#F53255")),
+            ("Discarded: empty output", n_failed_empty_output_batches, lighten_hex_color("#7E57C2")),
+            ],
+        )]
+        outcome_title = (
+            "LM batch outcomes\n"
+            f"(out of {n_planned_batches} planned batches)"
+        )
+        outcome_xlabel = "Batch count"
+        max_outcome_count = n_planned_batches
+    else:
+        top_bar_specs = [(
+            "Planned LM batches",
+            [
+            ("Kept: exact output", n_kept_exact_output_batches, lighten_hex_color("#2E8B57")),
+            ("Exception", n_failed_exception_batches, lighten_hex_color("#F46920")),
+            ("Empty output", n_failed_empty_output_batches, lighten_hex_color("#7E57C2")),
+            ("Count mismatch", n_failed_short_output_batches + n_failed_long_output_batches, lighten_hex_color("#F53255")),
+            ],
+        )]
+        outcome_title = (
+            "LM batch outcomes\n"
+            f"(out of {n_planned_batches} planned batches)"
+        )
+        outcome_xlabel = "Batch count"
+        max_outcome_count = n_planned_batches
 
-    for email in emails_to_process:
-        subject = email.get("subject") or ""
-        normalized_subject = normalize_subject(subject)
-        if normalized_subject != current_subject:
-            flush_block()
-            current_subject = normalized_subject
+    legend_labels_used = set()
+    y_positions = list(reversed(range(len(top_bar_specs))))
+    y_labels = []
+    for y_position, (row_label, outcome_segments) in zip(y_positions, top_bar_specs):
+        y_labels.append(row_label)
+        left = 0
+        for label, value, color in outcome_segments:
+            legend_label = None
+            if label not in legend_labels_used:
+                legend_label = f"{label} ({value})"
+                legend_labels_used.add(label)
+            outcome_ax.barh(
+                y_position,
+                value,
+                left=left,
+                color=color,
+                edgecolor="white",
+                linewidth=0.8,
+                label=legend_label,
+            )
+            if value > 0:
+                x_position = left + (value / 2)
+                outcome_ax.text(
+                    x_position,
+                    y_position,
+                    str(value),
+                    ha="center",
+                    va="center",
+                    color="white" if value >= 10 else "black",
+                    fontweight="bold" if value >= 10 else None,
+                    fontsize=11,
+                    clip_on=True,
+                )
+            left += value
 
-        current_block_emails.append(email)
+    outcome_ax.set_xlim(0, max(1, max_outcome_count))
+    outcome_ax.set_yticks(y_positions, y_labels)
+    outcome_ax.set_title(outcome_title)
+    outcome_ax.set_xlabel(outcome_xlabel, fontsize=13)
+    outcome_ax.tick_params(axis="both", labelsize=12)
+    outcome_ax.grid(axis="x", alpha=0.25)
+    outcome_ax.legend(loc="lower right", fontsize=12)
 
-    if current_block_emails:
-        flush_block()
+    exception_labels = ["OOM", "Timeout"]
+    exception_values = [n_failed_oom_batches, n_failed_timeout_batches]
+    exception_colors = [
+        lighten_hex_color("#FF6B6B"),
+        lighten_hex_color("#6A5ACD"),
+    ]
 
-    return emails_with_threads
+    exception_bars = exception_ax.bar(
+        exception_labels,
+        exception_values,
+        color=exception_colors,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    for bar, value in zip(exception_bars, exception_values):
+        exception_ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value,
+            str(value),
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+    exception_ax.set_title(
+        "Exception breakdown\n"
+        f"({n_failed_exception_batches} batches)"
+    )
+    exception_ax.set_ylabel("Batch count", fontsize=13)
+    exception_ax.tick_params(axis="both", labelsize=12)
+    exception_ax.grid(axis="y", alpha=0.25)
 
-##############################################################################
-# Helper 10: Add dataset thread IDs for contiguous same-subject email blocks #
-##############################################################################
-def assign_thread_ids_by_subject_blocks_for_dataset(rows):
-    # insert 'threadID' as 2nd column on 1st row
-    rows_with_threads = [rows[0][:1] + ["threadID"] + rows[0][1:]]
+    if mode == "thread_grouper":
+        discarded_labels = ["Short output", "Empty output"]
+        discarded_values = [n_failed_short_output_batches, n_failed_empty_output_batches]
+        discarded_colors = [
+            lighten_hex_color("#F53255"),
+            lighten_hex_color("#7E57C2"),
+        ]
+        discarded_ax.set_title(
+            "Discarded output breakdown\n"
+            f"({n_failed_short_output_batches + n_failed_empty_output_batches} batches)"
+        )
+    else:
+        discarded_labels = ["Fewer outputs", "More outputs"]
+        discarded_values = [n_failed_short_output_batches, n_failed_long_output_batches]
+        discarded_colors = [
+            lighten_hex_color("#F53255"),
+            lighten_hex_color("#8BC34A"),
+        ]
+        discarded_ax.set_title(
+            "Count mismatch breakdown\n"
+            f"({n_failed_short_output_batches + n_failed_long_output_batches} batches)"
+        )
+    discarded_bars = discarded_ax.bar(
+        discarded_labels,
+        discarded_values,
+        color=discarded_colors,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    for bar, value in zip(discarded_bars, discarded_values):
+        discarded_ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value,
+            str(value),
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+    discarded_ax.tick_params(axis="both", labelsize=12)
+    discarded_ax.grid(axis="y", alpha=0.25)
 
-    data_rows = rows[1:]
-    email_subjects = [{"subject": row[1]} for row in data_rows]
-    emails_with_threads = assign_thread_ids_by_subject_blocks(email_subjects)
+    shared_bottom_ymax = max(55, max(exception_values + discarded_values + [0]) + 3)
+    exception_ax.set_ylim(0, shared_bottom_ymax)
+    discarded_ax.set_ylim(0, shared_bottom_ymax)
 
-    for row, email in zip(data_rows, emails_with_threads):
-        rows_with_threads.append(row[:1] + [email["threadID"]] + row[1:])
+    if mode == "thread_grouper":
+        total_bypassed_threads = (
+            email_limit_bypass_statistics["n_threads"]
+            + token_limit_bypass_statistics["n_threads"]
+        )
+        total_bypassed_emails = (
+            email_limit_bypass_statistics["n_emails"]
+            + token_limit_bypass_statistics["n_emails"]
+        )
+        summary_text = (
+            f"Rule-based threads total: {n_rule_based_thread_count}\n"
+            f"Rule-based threads sent to LM: {n_rule_based_threads_sent_to_lm}\n"
+            f"Rule-based threads bypassed before LM: {total_bypassed_threads} "
+            f"covering {total_bypassed_emails} emails\n"
+            f"Kept LM batches: {kept_batches}\n"
+            f"Skipped LM batches: {failed_batches}"
+        )
+    else:
+        summary_text = (
+            f"Input threads total: {n_rule_based_thread_count}\n"
+            f"Split threads: {n_split_threads}\n"
+            f"Thread chunks sent to LM: {n_thread_chunks}"
+        )
+    fig.text(
+        0.02,
+        0.02,
+        summary_text,
+        ha="left",
+        va="bottom",
+        fontsize=11,
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "#F5F5F5",
+            "edgecolor": "#D0D0D0",
+            "alpha": 0.95,
+        },
+    )
 
-    return rows_with_threads
+    fig.tight_layout(rect=(0, 0.10, 1, 0.96))
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    print(f"save_post_decoder_statistics_plot: saved plot to {output_path}")
 
-##############################################################################
-# Helper 11: Assign dataset thread IDs using subject and participant overlap #
-##############################################################################
-def assign_thread_ids_by_subject_and_participant_overlap_for_dataset(rows, my_email_addresses, lookback_window_rows):
-    rows_with_threads = [rows[0][:1] + ["threadID"] + rows[0][1:]]
+###################################################
+# Helper 14: Save pie-chart distribution as image #
+###################################################
+def save_pie_chart_distribution_plot(
+        labels,
+        sizes,
+        title,
+        output_path,
+        preferred_label_order=None,
+        label_to_color=None,
+        ):
+    from pathlib import Path
+    import matplotlib.pyplot as plt
 
-    folder_uri_index = rows[0].index("folderURI")
-    subject_index = rows[0].index("c1subject")
-    author_index = rows[0].index("c3author")
-    recipients_index = rows[0].index("c4recipients")
+    preferred_label_order = list(preferred_label_order or [])
+    label_to_color = dict(label_to_color or {})
+    fallback_pie_colors = [
+        "#FFAF00",
+        "#F46920",
+        "#F857C1",
+        "#F53255",
+        "#29BDFD",
+        "#00CBBF",
+        "#01C159",
+        "#9DCA1C",
+    ]
+    label_to_size = dict(zip(labels, sizes))
+    ordered_labels = [label for label in preferred_label_order if label in label_to_size]
+    ordered_labels.extend(label for label in labels if label not in ordered_labels)
+    labels = ordered_labels
+    sizes = [label_to_size[label] for label in labels]
+    used_colors = {
+        label_to_color[label]
+        for label in labels
+        if label in label_to_color
+    }
+    remaining_fallback_colors = [
+        color
+        for color in fallback_pie_colors
+        if color not in used_colors
+    ]
+    pie_colors = []
+    fallback_color_index = 0
+    for label in labels:
+        if label in label_to_color:
+            pie_colors.append(lighten_hex_color(label_to_color[label]))
+            continue
+        pie_colors.append(
+            lighten_hex_color(
+                remaining_fallback_colors[
+                    fallback_color_index % len(remaining_fallback_colors)
+                ]
+            )
+        )
+        fallback_color_index += 1
+    total_size = sum(sizes)
+    if total_size > 0:
+        startangle = 90 + 180 * (sizes[0] / total_size)
+    else:
+        startangle = 90
+    fig, ax = plt.subplots(figsize=(8, 8))
+    wedges, *_ = ax.pie(
+        sizes,
+        labels=labels,
+        autopct='%1.1f%%', # one decimal place
+        colors=pie_colors,
+        counterclock=False,
+        startangle=startangle,
+        labeldistance=1.03,
+        pctdistance=0.62,
+        textprops={"fontsize": 13},
+    )
+    ax.set_title(title, fontsize=16, pad=26)
+    ax.axis("equal")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
 
+###########################################################
+# Helper 15: Save stacked size-distribution plot as image #
+###########################################################
+def save_stacked_size_distribution_plot(
+        size_counts,
+        inbound_email_counts,
+        outbound_email_counts,
+        title,
+        x_label,
+        y_label,
+        output_path,
+        ):
+    from pathlib import Path
+    import matplotlib.pyplot as plt
+
+    if not size_counts:
+        return
+
+    x_values = sorted(size_counts.keys())
+    count_values = [size_counts[size] for size in x_values]
+    inbound_bar_heights = []
+    outbound_bar_heights = []
+    for size, count_value in zip(x_values, count_values):
+        inbound_email_count = inbound_email_counts[size]
+        outbound_email_count = outbound_email_counts[size]
+        total_email_count = inbound_email_count + outbound_email_count
+        inbound_ratio = (
+            inbound_email_count / total_email_count
+            if total_email_count
+            else 0
+        )
+        outbound_ratio = (
+            outbound_email_count / total_email_count
+            if total_email_count
+            else 0
+        )
+        inbound_bar_heights.append(count_value * inbound_ratio)
+        outbound_bar_heights.append(count_value * outbound_ratio)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(14, 6.5))
+    inbound_color = lighten_hex_color("#F46920")
+    outbound_color = lighten_hex_color("#F53255")
+    ax.bar(
+        x_values,
+        inbound_bar_heights,
+        width=0.85,
+        color=inbound_color,
+        edgecolor="white",
+        linewidth=0.6,
+        label="Incoming share",
+    )
+    bars = ax.bar(
+        x_values,
+        outbound_bar_heights,
+        width=0.85,
+        bottom=inbound_bar_heights,
+        color=outbound_color,
+        edgecolor="white",
+        linewidth=0.6,
+        label="Outgoing share",
+    )
+    ax.set_title(title, fontsize=17, pad=14)
+    ax.set_xlabel(x_label, fontsize=13)
+    ax.set_ylabel(y_label, fontsize=13)
+    ax.set_xticks(x_values)
+    ax.tick_params(axis="both", labelsize=12)
+    ax.legend(fontsize=12)
+    for bar, count_value in zip(bars, count_values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            count_value,
+            f"{count_value}",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+        )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+################################################
+# Helper 16: Remove fully internal UPM threads #
+################################################
+def remove_internal_upm_threads(threads, upm_domains):
+    kept_threads = []
+    discarded_threads = []
+
+    for thread in threads:
+        if thread["emails"] and all(
+            is_upm_internal(
+                email["author"],
+                email["recipients"],
+                upm_domains,
+            )
+            for email in thread["emails"]
+        ):
+            discarded_threads.append(thread)
+            continue
+        kept_threads.append(thread)
+
+    return kept_threads, discarded_threads
+
+##################################################################
+# Helper 17: Build email samples grouped by thread and folderURI #
+##################################################################
+def build_samples_grouped_by_thread_and_folderURI(
+        threads,
+        my_email_addresses,
+        ):
     my_email_addresses = set(
         email.lower()
         for email in (my_email_addresses or [])
         if email
     )
 
-    thread_id_to_metadata = {}
-    row_thread_ids = []
-    next_thread_id = 1
+    folder_uri_to_thread_samples_groups = {}
+    for thread in threads:
+        folder_uri = thread["folder_uri"]
+        thread_id = thread["thread_id"]
+        thread_emails = thread["emails"]
+        thread_size = thread["thread_size"]
 
-    for row_index, row in enumerate(rows[1:]):
-        folder_uri = row[folder_uri_index]
-        subject = row[subject_index]
-        normalized_subject = normalize_subject(subject)
-        author = row[author_index]
-        recipients = row[recipients_index]
-        all_participants = extract_participant_emails(author, recipients)
-        participants = {email for email in all_participants if email not in my_email_addresses}
-        if not participants:
-            participants = all_participants
-
-        candidate_thread_ids = []
-        for thread_id, metadata in thread_id_to_metadata.items():
-            if metadata["folder_uri"] != folder_uri:
-                continue
-            if metadata["normalized_subject"] != normalized_subject:
-                continue
-            if row_index - metadata["last_row_index"] > lookback_window_rows:
-                continue
-            if participants and metadata["participants"] and not participants.intersection(metadata["participants"]):
-                continue
-            candidate_thread_ids.append(thread_id)
-
-        if candidate_thread_ids:
-            best_thread_id = max(
-                candidate_thread_ids,
-                key=lambda thread_id: (
-                    len(participants.intersection(thread_id_to_metadata[thread_id]["participants"])),
-                    thread_id_to_metadata[thread_id]["last_row_index"],
-                ),
+        thread_samples = []
+        for email_index, email in enumerate(thread_emails):
+            email_author_emails = extract_emails_from_participant_raw_texts(
+                email["author"]
             )
-            thread_id_to_metadata[best_thread_id]["participants"].update(participants)
-            thread_id_to_metadata[best_thread_id]["last_row_index"] = row_index
-            row_thread_ids.append(best_thread_id)
-        else:
-            thread_id = next_thread_id
-            next_thread_id += 1
-            thread_id_to_metadata[thread_id] = {
+            email_recipient_emails = extract_emails_from_participant_raw_texts(
+                email["recipients"]
+            )
+            is_message_to_self_from_director_pov = (
+                bool(email_author_emails)
+                and
+                bool(email_recipient_emails)
+                and email_author_emails.issubset(my_email_addresses)
+                and email_recipient_emails.issubset(my_email_addresses)
+            )
+            if is_message_to_self_from_director_pov:
+                continue
+
+            context_emails = thread_emails[:email_index]
+            later_emails = thread_emails[email_index + 1:]
+            other_gold_reply_candidates = [
+                later_email
+                for later_email in later_emails
+                if bool(
+                    extract_emails_from_participant_raw_texts(
+                        later_email["author"]
+                    ).intersection(my_email_addresses)
+                )
+            ]
+
+            gold_reply = None
+            if other_gold_reply_candidates:
+                for candidate in other_gold_reply_candidates:
+                    candidate_recipient_emails = extract_emails_from_participant_raw_texts(
+                        candidate["recipients"]
+                    )
+                    if email_author_emails.intersection(candidate_recipient_emails):
+                        gold_reply = candidate
+                        break
+                if gold_reply is None:
+                    gold_reply = other_gold_reply_candidates[0]
+
+            thread_samples.append({
                 "folder_uri": folder_uri,
-                "normalized_subject": normalized_subject,
-                "participants": set(participants),
-                "last_row_index": row_index,
-            }
-            row_thread_ids.append(thread_id)
+                "thread_id": thread_id,
+                "email": email,
+                "context_emails": context_emails,
+                "gold_reply": gold_reply,
+                "other_gold_reply_candidates": [
+                    candidate
+                    for candidate in other_gold_reply_candidates
+                    if candidate != gold_reply
+                ],
+                "thread_size": thread_size,
+            })
 
-    for row, thread_id in zip(rows[1:], row_thread_ids):
-        rows_with_threads.append(row[:1] + [thread_id] + row[1:])
+        if not thread_samples:
+            continue
 
-    return rows_with_threads
+        if folder_uri not in folder_uri_to_thread_samples_groups:
+            folder_uri_to_thread_samples_groups[folder_uri] = []
+        folder_uri_to_thread_samples_groups[folder_uri].append(thread_samples)
 
-############################################################################
-# Helper 12: Reconstruct dataset thread IDs with decoder-based LM grouping #
-############################################################################
-def assign_thread_ids_with_decoder_for_dataset(
-        rows,
-        my_email_addresses,
-        lookback_window_rows,
-        run_thread_grouper,
-        thread_grouper_model_config,
-        task_description_start,
-        example_message,
-        prompt_template,
-        max_emails_per_batch,
-        max_input_tokens,
-        weak_thread_size_plot_path,
-        ):
-    import asyncio
-    import sys
-    from collections import Counter
-    from transformers import AutoProcessor, AutoTokenizer
-    from config.decoder import GEMMA4_MODEL_FAMILY
-    from helpers.decoder import count_tokens
-    from statistics import median
+    return folder_uri_to_thread_samples_groups
 
-    weak_rows_with_threads = assign_thread_ids_by_subject_and_participant_overlap_for_dataset(
-        rows,
-        my_email_addresses,
-        lookback_window_rows,
-    )
-    weak_header = weak_rows_with_threads[0]
-    final_header = weak_header[:2] + ["weakThreadID"] + weak_header[2:]
+###################################################################
+# Helper 18: Split grouped samples into train, dev, and test sets #
+###################################################################
+def split_samples_by_split_name(folder_uri_to_thread_samples_groups, train_split_pct, dev_split_pct, seed):
+    import random
 
-    rows_with_threads = [final_header]
-    next_thread_id = 1
-    batch_entries = []
-    planned_batch_email_counts = []
-    planned_batch_prompt_token_counts = []
-    bypassed_email_limit_weak_group_count = 0
-    bypassed_email_limit_email_count = 0
-    bypassed_token_limit_weak_group_count = 0
-    bypassed_token_limit_email_count = 0
-    bypassed_token_limit_prompt_token_counts = []
-    my_email_addresses = {
-        email.lower()
-        for email in (my_email_addresses or [])
-        if email
+    rng = random.Random(seed)
+    split_names = ["train", "dev", "test"]
+    split_name_to_samples = {
+        split_name: []
+        for split_name in split_names
     }
-    weak_group_sizes = []
-    weak_group_inbound_email_counts = Counter()
-    weak_group_outbound_email_counts = Counter()
 
-    folder_uri_to_weak_groups = build_weak_groups_by_folder_from_rows_with_threads(
-        weak_rows_with_threads
-    )
-
-    thread_grouper_tokenizer = None
-    if max_input_tokens is not None:
-        if (
-            thread_grouper_model_config.get("is_vision_model")
-            or thread_grouper_model_config.get("model_family") == GEMMA4_MODEL_FAMILY
-        ):
-            thread_grouper_processor = AutoProcessor.from_pretrained(
-                thread_grouper_model_config["model_name_or_path"],
-                trust_remote_code=True,
-            )
-            thread_grouper_tokenizer = thread_grouper_processor.tokenizer
-        else:
-            thread_grouper_tokenizer = AutoTokenizer.from_pretrained(
-                thread_grouper_model_config["model_name_or_path"],
-                trust_remote_code=True,
-            )
-
-    def build_prompt_from_batch_rows(batch_rows):
-        emails = [
-            {
-                "id": str(batch_row_index),
-                "threadID": row["weak_thread_id"],
-                "from": row["author"].strip(),
-                "to": row["recipients"].strip(),
-                "subject": row["subject"].strip(),
-                "body": row["body"].strip(),
-            }
-            for batch_row_index, row in enumerate(batch_rows)
-        ]
-        prompt = prompt_template.format(
-            task_description_start=task_description_start.format(
-                email_count=len(emails)
-            ),
-            example_message=example_message,
-            emails_section="\n".join(str(email) for email in emails),
+    for folder_uri, thread_samples_groups in folder_uri_to_thread_samples_groups.items():
+        n_samples_in_folder = sum(
+            len(thread_samples)
+            for thread_samples in thread_samples_groups
         )
-        return prompt
-
-    def count_batch_prompt_tokens(batch_rows):
-        if thread_grouper_tokenizer is None:
-            return None
-        return count_tokens(
-            thread_grouper_tokenizer,
-            build_prompt_from_batch_rows(batch_rows),
+        split_name_to_n_samples_goal_in_folder = {
+            "train": int(train_split_pct * n_samples_in_folder),
+            "dev": int(dev_split_pct * n_samples_in_folder),
+        }
+        split_name_to_n_samples_goal_in_folder["test"] = (
+            n_samples_in_folder
+            - split_name_to_n_samples_goal_in_folder["train"]
+            - split_name_to_n_samples_goal_in_folder["dev"]
         )
+        split_name_to_n_samples_assigned_in_folder = {
+            split_name: 0
+            for split_name in split_names
+        }
 
-    for folder_uri, weak_groups in folder_uri_to_weak_groups.items():
-        for weak_group in weak_groups:
-            weak_group_size = weak_group["thread_size"]
-            weak_group_sizes.append(weak_group_size)
-            outbound_email_count = sum(
-                1
-                for email in weak_group["emails"]
-                if extract_participant_emails(email["author"], "").intersection(my_email_addresses)
-            )
-            inbound_email_count = weak_group_size - outbound_email_count
-            weak_group_outbound_email_counts[weak_group_size] += outbound_email_count
-            weak_group_inbound_email_counts[weak_group_size] += inbound_email_count
+        thread_samples_groups = list(thread_samples_groups)
+        rng.shuffle(thread_samples_groups)
 
-        batches = []
-        current_batch = []
-        current_batch_size = 0
-        for weak_group in weak_groups:
-            weak_group_size = weak_group["thread_size"]
-            if weak_group_size > max_emails_per_batch:
-                if current_batch:
-                    batches.append(current_batch)
-                    current_batch = []
-                    current_batch_size = 0
-                bypassed_email_limit_weak_group_count += 1
-                bypassed_email_limit_email_count += weak_group_size
-                for message in weak_group["emails"]:
-                    rows_with_threads.append([
-                        folder_uri,
-                        next_thread_id,
-                        weak_group["weak_thread_id"],
-                        message["subject"],
-                        message["body"],
-                        message["author"],
-                        message["recipients"],
-                    ])
-                next_thread_id += 1
-                continue
-
-            if max_input_tokens is not None:
-                weak_group_prompt_tokens = count_batch_prompt_tokens(weak_group["emails"])
-                if weak_group_prompt_tokens is not None and weak_group_prompt_tokens > max_input_tokens:
-                    if current_batch:
-                        batches.append(current_batch)
-                        current_batch = []
-                        current_batch_size = 0
-                    bypassed_token_limit_weak_group_count += 1
-                    bypassed_token_limit_email_count += weak_group_size
-                    bypassed_token_limit_prompt_token_counts.append(weak_group_prompt_tokens)
-                    for message in weak_group["emails"]:
-                        rows_with_threads.append([
-                            folder_uri,
-                            next_thread_id,
-                            weak_group["weak_thread_id"],
-                            message["subject"],
-                            message["body"],
-                            message["author"],
-                            message["recipients"],
-                        ])
-                    next_thread_id += 1
-                    continue
-
-            if (
-                current_batch
-                and current_batch_size + weak_group_size > max_emails_per_batch
-            ):
-                batches.append(current_batch)
-                current_batch = []
-                current_batch_size = 0
-
-            if max_input_tokens is not None and current_batch:
-                candidate_batch = current_batch + weak_group["emails"]
-                candidate_prompt_tokens = count_batch_prompt_tokens(candidate_batch)
+        for thread_samples in thread_samples_groups:
+            n_samples_in_thread = len(thread_samples)
+            split_names_that_fit = [
+                split_name
+                for split_name in split_names
                 if (
-                    candidate_prompt_tokens is not None
-                    and candidate_prompt_tokens > max_input_tokens
-                ):
-                    batches.append(current_batch)
-                    current_batch = []
-                    current_batch_size = 0
+                    split_name_to_n_samples_assigned_in_folder[split_name]
+                    + n_samples_in_thread
+                ) <= split_name_to_n_samples_goal_in_folder[split_name]
+            ]
 
-            current_batch.extend(weak_group["emails"])
-            current_batch_size += weak_group_size
-        if current_batch:
-            batches.append(current_batch)
+            if split_names_that_fit:
+                best_split_name = max(
+                    split_names_that_fit,
+                    key=lambda split_name: (
+                        split_name_to_n_samples_goal_in_folder[split_name]
+                        - split_name_to_n_samples_assigned_in_folder[split_name]
+                    ),
+                )
+            else:
+                best_split_name = min(
+                    split_names,
+                    key=lambda split_name: (
+                        split_name_to_n_samples_assigned_in_folder[split_name]
+                        + n_samples_in_thread
+                        - split_name_to_n_samples_goal_in_folder[split_name]
+                    ),
+                )
+            split_name_to_n_samples_assigned_in_folder[best_split_name] += n_samples_in_thread
+            split_name_to_samples[best_split_name].extend(thread_samples)
 
-        for batch_rows in batches:
-            batch_weak_thread_ids = sorted(
-                {
-                    row["weak_thread_id"]
-                    for row in batch_rows
+    return split_name_to_samples
+
+###############################################
+# Helper 19: Save split-summary plot as image #
+###############################################
+def save_split_summary_plot(
+        split_name_to_sample_count,
+        split_name_to_thread_count,
+        title,
+        output_path,
+        ):
+    from pathlib import Path
+    import matplotlib.pyplot as plt
+
+    split_names = ["train", "dev", "test"]
+    sample_counts = [split_name_to_sample_count[split_name] for split_name in split_names]
+    thread_counts = [split_name_to_thread_count[split_name] for split_name in split_names]
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(
+        ncols=2,
+        figsize=(12.8, 5.0),
+        sharey=False,
+    )
+    fig.suptitle(title, fontsize=16, y=0.93)
+
+    x_values = list(range(len(split_names)))
+    sample_color = lighten_hex_color("#00CBBF")
+    thread_color = lighten_hex_color("#F46920")
+
+    sample_bars = axes[0].bar(
+        x_values,
+        sample_counts,
+        width=0.70,
+        color=sample_color,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    thread_bars = axes[1].bar(
+        x_values,
+        thread_counts,
+        width=0.70,
+        color=thread_color,
+        edgecolor="white",
+        linewidth=0.8,
+    )
+    axes[0].set_title("Samples per split", fontsize=15, pad=10)
+    axes[1].set_title("Threads per split", fontsize=15, pad=10)
+    axes[0].set_ylabel("Count", fontsize=13)
+
+    for ax in axes:
+        ax.set_xticks(x_values)
+        ax.set_xticklabels(split_names)
+        ax.tick_params(axis="both", labelsize=12)
+        ax.grid(axis="y", alpha=0.25)
+
+    for bars, ax in [(sample_bars, axes[0]), (thread_bars, axes[1])]:
+        for bar in bars:
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height(),
+                f"{int(bar.get_height())}",
+                ha="center",
+                va="bottom",
+                fontsize=11,
+            )
+
+    fig.tight_layout(rect=(0, 0, 1, 0.925), w_pad=1.25)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    print(f"save_split_summary_plot: saved plot to {output_path}")
+
+######################################################
+# Helper 20: Format email as single promptable block #
+######################################################
+def format_email_prompt_block(
+        email,
+        author_key="author",
+        recipients_key="recipients",
+        subject_key="subject",
+        body_key="body",
+        date_key=None,
+        wrap_with_dashes=False,
+        ):
+    subject = (email.get(subject_key) or "").strip()
+    body = (email.get(body_key) or "").strip()
+    author = (email.get(author_key) or "").strip()
+    recipients = (email.get(recipients_key) or "").strip()
+
+    lines = [
+        f"From: {author}",
+        f"To: {recipients}",
+    ]
+    if date_key:
+        date = email.get(date_key)
+        date_text = str(date) if date else ""
+        lines.append(f"Date: {date_text}")
+    lines.extend([
+        f"Subject: {subject}",
+        "Body:",
+        body,
+    ])
+    block = "\n".join(lines).strip()
+    if wrap_with_dashes:
+        block = f"-----\n{block}\n-----"
+    return block
+
+######################################################################
+# Helper 21: Format grouped thread emails as single promptable block #
+######################################################################
+def format_email_thread_text(emails):
+    return "\n".join(
+        format_email_prompt_block(
+            email,
+            wrap_with_dashes=True,
+        )
+        for email in emails
+    )
+
+##########################################################
+# Helper 22: Prepare encode batches for one data variant #
+##########################################################
+def prepare_batches_for_data_variant(
+        variant,
+        records,
+        batch_size,
+        encode_timestamp,
+        ):
+    base_variant = variant.removeprefix("email_")
+
+    batches = []
+    current_batch = {
+        "texts": [],
+        "payloads": [],
+        "point_ids": [],
+    }
+    next_point_id = 0
+
+    for record in records:
+        if base_variant in ["lm_q_and_a_chunks", "lm_q_and_a_for_q_only_chunks"]:
+            for pair_index, pair in enumerate(record["pairs"], start=1):
+                if base_variant == "lm_q_and_a_chunks":
+                    text = f"Q: {pair['question']}\nA: {pair['answer']}"
+                else:
+                    text = pair["question"]
+
+                payload = {
+                    **record,
+                    "variant": variant,
+                    "timestamp": encode_timestamp,
                 }
-            )
-            batch_weak_thread_id_hint = "|".join(str(thread_id) for thread_id in batch_weak_thread_ids)
-            prompt = build_prompt_from_batch_rows(batch_rows)
-            batch_prompt_tokens = count_batch_prompt_tokens(batch_rows)
-            planned_batch_email_counts.append(len(batch_rows))
-            if batch_prompt_tokens is not None:
-                planned_batch_prompt_token_counts.append(batch_prompt_tokens)
-            batch_entries.append((folder_uri, batch_rows, batch_weak_thread_id_hint, prompt))
+                payload.pop("pairs", None)
+                payload.update({
+                    "pair_index": pair_index,
+                    "question": pair["question"],
+                    "answer": pair["answer"],
+                    "decoder_token_count_q": pair["decoder_token_count_q"],
+                    "encoder_token_count_q": pair["encoder_token_count_q"],
+                    "decoder_token_count_a": pair["decoder_token_count_a"],
+                    "encoder_token_count_a": pair["encoder_token_count_a"],
+                })
 
-    if weak_group_sizes:
-        weak_group_size_counts = Counter(weak_group_sizes)
-        save_stacked_size_distribution_plot(
-            weak_group_size_counts,
-            weak_group_inbound_email_counts,
-            weak_group_outbound_email_counts,
-            title="Weak Thread Size Distribution",
-            x_label="Emails per weak thread",
-            y_label="Weak thread count",
-            output_path=weak_thread_size_plot_path,
-        )
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            f"saved weak-thread-size plot to {weak_thread_size_plot_path}"
-        )
+                current_batch["texts"].append(text)
+                current_batch["payloads"].append(payload)
+                current_batch["point_ids"].append(next_point_id)
+                next_point_id += 1
 
-    async def run_batch(prompt):
-        return await run_thread_grouper.remote.aio(
-            context=[],
-            current_turn_input_text=prompt,
-            current_turn_image_in_bytes=None,
-            **thread_grouper_model_config,
-        )
+                if len(current_batch["texts"]) == batch_size:
+                    batches.append(current_batch)
+                    current_batch = {
+                        "texts": [],
+                        "payloads": [],
+                        "point_ids": [],
+                    }
+        else:
+            current_batch["texts"].append(record["text"])
+            current_batch["payloads"].append({
+                **record,
+                "variant": variant,
+                "timestamp": encode_timestamp,
+            })
+            current_batch["point_ids"].append(next_point_id)
+            next_point_id += 1
 
-    async def run_all_batches():
-        if not batch_entries:
-            return []
-        return await asyncio.gather(
-            *(run_batch(prompt) for _, _, _, prompt in batch_entries),
-            return_exceptions=True,
-        )
+            if len(current_batch["texts"]) == batch_size:
+                batches.append(current_batch)
+                current_batch = {
+                    "texts": [],
+                    "payloads": [],
+                    "point_ids": [],
+                }
 
-    total_weak_group_count = len(weak_group_sizes)
-    total_batched_weak_group_count = (
-        total_weak_group_count
-        - bypassed_email_limit_weak_group_count
-        - bypassed_token_limit_weak_group_count
-    )
-    print(
-        "assign_thread_ids_with_decoder_for_dataset: "
-        f"planning summary: {total_weak_group_count} weak groups total, "
-        f"{total_batched_weak_group_count} weak groups sent to LM, "
-        f"{len(batch_entries)} LM batches planned"
-    )
-    if bypassed_email_limit_weak_group_count:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            "planning summary: "
-            f"{bypassed_email_limit_weak_group_count} weak groups bypassed by email count "
-            f"covering {bypassed_email_limit_email_count} input emails"
-        )
-    if bypassed_token_limit_weak_group_count:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            "planning summary: "
-            f"{bypassed_token_limit_weak_group_count} weak groups bypassed by input tokens "
-            f"covering {bypassed_token_limit_email_count} input emails"
-        )
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            "planning summary: bypassed token-limit prompt tokens "
-            f"(min/median/max) = "
-            f"{min(bypassed_token_limit_prompt_token_counts)}/"
-            f"{int(median(bypassed_token_limit_prompt_token_counts))}/"
-            f"{max(bypassed_token_limit_prompt_token_counts)}"
-        )
-    if planned_batch_email_counts:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            "planning summary: planned batch input emails "
-            f"(min/median/max) = "
-            f"{min(planned_batch_email_counts)}/"
-            f"{int(median(planned_batch_email_counts))}/"
-            f"{max(planned_batch_email_counts)}"
-        )
-    if planned_batch_prompt_token_counts:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            "planning summary: planned batch prompt tokens "
-            f"(min/median/max) = "
-            f"{min(planned_batch_prompt_token_counts)}/"
-            f"{int(median(planned_batch_prompt_token_counts))}/"
-            f"{max(planned_batch_prompt_token_counts)}"
-        )
+    if current_batch["texts"]:
+        batches.append(current_batch)
 
-    sys.exit(0)
-
-    batch_results = asyncio.run(run_all_batches())
-    failed_batch_count = 0
-    failed_email_count = 0
-
-    for (folder_uri, batch_rows, batch_weak_thread_id_hint, _), batch_result in zip(batch_entries, batch_results):
-        if isinstance(batch_result, Exception):
-            failed_batch_count += 1
-            failed_email_count += len(batch_rows)
-            print(
-                "assign_thread_ids_with_decoder_for_dataset: "
-                f"batch detail: skipping failed batch for folderURI={folder_uri} "
-                f"with {len(batch_rows)} input emails ({batch_result})"
-            )
-            continue
-
-        parsed_threads, _ = batch_result
-        if not parsed_threads:
-            failed_batch_count += 1
-            failed_email_count += len(batch_rows)
-            print(
-                "assign_thread_ids_with_decoder_for_dataset: "
-                f"batch detail: skipping empty-output batch for folderURI={folder_uri} "
-                f"with {len(batch_rows)} input emails and 0 output emails"
-            )
-            continue
-
-        n_output_messages = sum(
-            len(thread["messages"])
-            for thread in parsed_threads
-        )
-
-        if n_output_messages < len(batch_rows):
-            failed_batch_count += 1
-            failed_email_count += len(batch_rows)
-            print(
-                "assign_thread_ids_with_decoder_for_dataset: "
-                f"batch detail: error: skipping short-output batch for folderURI={folder_uri} "
-                f"with {len(batch_rows)} input emails and {n_output_messages} output emails"
-            )
-            continue
-        if n_output_messages > len(batch_rows):
-            print(
-                "assign_thread_ids_with_decoder_for_dataset: "
-                f"batch detail: warning: keeping expanded-output batch for folderURI={folder_uri} "
-                f"with {len(batch_rows)} input emails and {n_output_messages} output emails"
-            )
-
-        for thread in parsed_threads:
-            for message in thread["messages"]:
-                rows_with_threads.append([
-                    folder_uri,
-                    next_thread_id,
-                    batch_weak_thread_id_hint,
-                    message.get("subject"),
-                    message.get("body"),
-                    message.get("from"),
-                    message.get("to"),
-                ])
-            next_thread_id += 1
-
-    if failed_batch_count:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            f"summary: skipped {failed_batch_count} failed batches covering {failed_email_count} input emails"
-        )
-    if bypassed_email_limit_weak_group_count:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            f"summary: bypassed {bypassed_email_limit_weak_group_count} oversized weak groups by email count "
-            f"covering {bypassed_email_limit_email_count} input emails"
-        )
-    if bypassed_token_limit_weak_group_count:
-        print(
-            "assign_thread_ids_with_decoder_for_dataset: "
-            f"summary: bypassed {bypassed_token_limit_weak_group_count} oversized weak groups by input tokens "
-            f"covering {bypassed_token_limit_email_count} input emails"
-        )
-
-    return rows_with_threads
+    return batches
 
 #################################################################################
-# Helper 13: Assign production thread IDs using subject and participant overlap #
+# Helper 23: Assign production thread IDs using subject and participant overlap #
 #################################################################################
 def assign_thread_ids_by_subject_and_participant_overlap_for_production(emails, my_email_addresses):
     if not emails:
@@ -789,7 +1616,10 @@ def assign_thread_ids_by_subject_and_participant_overlap_for_production(emails, 
     for email in emails:
         email_subject = email.get("subject") or ""
         email_normalized_subject = normalize_subject(email_subject)
-        email_participants = extract_participant_emails(email.get("from"), email.get("to"))
+        email_participants = extract_emails_from_participant_raw_texts(
+            email.get("from"),
+            email.get("to"),
+        )
         email_participants = {email for email in email_participants if email not in my_email_addresses}
         if not email_participants:
             continue
@@ -829,500 +1659,9 @@ def assign_thread_ids_by_subject_and_participant_overlap_for_production(emails, 
 
     return emails_with_threads_list
 
-###################################################################
-# Helper 14: Split an email body into unquoted and quoted content #
-###################################################################
-def get_unquoted_text(body, return_quoted=False):
-    import re
-    # get 1st match
-    match = re.search(
-        r"\s*(en .*?\b\d{4}\b.* escribió:|en .*?<[^>]*@[^>]*>.* escribió:|on .*?\b\d{4}\b.* wrote[:：]|on .*?<[^>]*@[^>]*>.* wrote[:：]|de:.*<[^>]*@[^>]*>.*enviado.*para:.*<[^>]*@[^>]*>.*asunto:|de:.*enviado:.*para:.*asunto:)",
-        body.lower(),
-        flags=re.IGNORECASE | re.DOTALL
-    )
-    if match:
-        unquoted = body[:match.start()]
-        quoted = body[match.start():]
-    else:
-        unquoted = body
-        quoted = ""
-    unquoted = unquoted.strip()
-    quoted = quoted.strip()
-    return (unquoted, quoted) if return_quoted else unquoted
-
-#######################################################################
-# Helper 15: Build weak-thread groups by folderURI from threaded rows #
-#######################################################################
-def build_weak_groups_by_folder_from_rows_with_threads(rows_with_threads):
-    if not rows_with_threads:
-        return {}
-
-    header = rows_with_threads[0]
-    folder_uri_index = header.index("folderURI")
-    weak_thread_id_index = header.index("threadID")
-    subject_index = header.index("c1subject")
-    body_index = header.index("c0body")
-    author_index = header.index("c3author")
-    recipients_index = header.index("c4recipients")
-
-    folder_uri_to_rows = {}
-    for row in rows_with_threads[1:]:
-        folder_uri = row[folder_uri_index]
-        folder_uri_to_rows.setdefault(folder_uri, []).append(row)
-
-    folder_uri_to_weak_groups = {}
-    for folder_uri, folder_rows in folder_uri_to_rows.items():
-        weak_groups = []
-        current_group_rows = []
-        current_weak_thread_id = None
-
-        for row in folder_rows:
-            weak_thread_id = row[weak_thread_id_index]
-            if current_group_rows and weak_thread_id != current_weak_thread_id:
-                weak_groups.append({
-                    "folder_uri": folder_uri,
-                    "weak_thread_id": current_weak_thread_id,
-                    "thread_size": len(current_group_rows),
-                    "emails": [
-                        {
-                            "subject": group_row[subject_index],
-                            "body": group_row[body_index],
-                            "author": group_row[author_index],
-                            "recipients": group_row[recipients_index],
-                            "weak_thread_id": current_weak_thread_id,
-                        }
-                        for group_row in current_group_rows
-                    ],
-                })
-                current_group_rows = []
-            current_group_rows.append(row)
-            current_weak_thread_id = weak_thread_id
-
-        if current_group_rows:
-            weak_groups.append({
-                "folder_uri": folder_uri,
-                "weak_thread_id": current_weak_thread_id,
-                "thread_size": len(current_group_rows),
-                "emails": [
-                    {
-                        "subject": group_row[subject_index],
-                        "body": group_row[body_index],
-                        "author": group_row[author_index],
-                        "recipients": group_row[recipients_index],
-                        "weak_thread_id": current_weak_thread_id,
-                    }
-                    for group_row in current_group_rows
-                ],
-            })
-
-        folder_uri_to_weak_groups[folder_uri] = weak_groups
-
-    return folder_uri_to_weak_groups
-
-######################################################################
-# Helper 16: Save weak-thread groups bucketed by size for inspection #
-######################################################################
-def save_weak_threads_by_size_for_dataset(
-        rows,
-        my_email_addresses,
-        lookback_window_rows,
-        output_path,
-        ):
-    import json
-    from pathlib import Path
-
-    weak_rows_with_threads = assign_thread_ids_by_subject_and_participant_overlap_for_dataset(
-        rows,
-        my_email_addresses,
-        lookback_window_rows,
-    )
-    folder_uri_to_weak_groups = build_weak_groups_by_folder_from_rows_with_threads(
-        weak_rows_with_threads
-    )
-
-    thread_size_to_weak_groups = {}
-    for weak_groups in folder_uri_to_weak_groups.values():
-        for weak_group in weak_groups:
-            thread_size = weak_group["thread_size"]
-            thread_size_to_weak_groups.setdefault(thread_size, []).append(weak_group)
-
-    sorted_thread_size_to_weak_groups = {
-        str(thread_size): thread_size_to_weak_groups[thread_size]
-        for thread_size in sorted(thread_size_to_weak_groups, reverse=True)
-    }
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, mode="w", encoding="utf-8") as json_file:
-        json.dump(sorted_thread_size_to_weak_groups, json_file, ensure_ascii=False, indent=2)
-    print(f"save_weak_threads_by_size_for_dataset: saved dataset to {output_path}")
-
-######################################################################
-# Helper 17: Build final post-LM threads grouped by folderURI and ID #
-######################################################################
-def build_grouped_threads_from_messages_with_threads_rows(messages_with_threads_rows):
-    ordered_thread_keys = []
-    thread_key_to_thread = {}
-
-    for row in messages_with_threads_rows:
-        folder_uri = row["folderURI"]
-        thread_id = str(row["threadID"])
-        thread_key = (folder_uri, thread_id)
-
-        if thread_key not in thread_key_to_thread:
-            thread_key_to_thread[thread_key] = {
-                "folder_uri": folder_uri,
-                "thread_id": thread_id,
-                "emails": [],
-            }
-            if "weakThreadID" in row:
-                thread_key_to_thread[thread_key]["weak_thread_id_hints"] = set()
-            ordered_thread_keys.append(thread_key)
-
-        if row.get("weakThreadID"):
-            for weak_thread_id_hint in str(row["weakThreadID"]).split("|"):
-                if weak_thread_id_hint:
-                    thread_key_to_thread[thread_key]["weak_thread_id_hints"].add(
-                        weak_thread_id_hint
-                    )
-
-        thread_key_to_thread[thread_key]["emails"].append({
-            "subject": row["c1subject"],
-            "body": row["c0body"],
-            "author": row["c3author"],
-            "recipients": row["c4recipients"],
-        })
-
-    for thread in thread_key_to_thread.values():
-        thread["thread_size"] = len(thread["emails"])
-        if "weak_thread_id_hints" in thread:
-            thread["weak_thread_id_hints"] = sorted(thread["weak_thread_id_hints"])
-
-    return ordered_thread_keys, thread_key_to_thread
-
-#####################################################################
-# Helper 18: Build final post-LM threads bucketed by LM thread size #
-#####################################################################
-def build_lm_threads_by_size_for_dataset(
-        rows_with_threads,
-        my_email_addresses,
-        ):
-    from collections import Counter
-
-    if not rows_with_threads:
-        return {}, Counter(), Counter(), Counter()
-
-    header = rows_with_threads[0]
-    messages_with_threads_rows = [
-        dict(zip(header, row))
-        for row in rows_with_threads[1:]
-    ]
-    _, thread_key_to_thread = build_grouped_threads_from_messages_with_threads_rows(
-        messages_with_threads_rows
-    )
-
-    my_email_addresses = {
-        email.lower()
-        for email in (my_email_addresses or [])
-        if email
-    }
-
-    thread_size_to_threads = {}
-    thread_size_counts = Counter()
-    thread_inbound_email_counts = Counter()
-    thread_outbound_email_counts = Counter()
-
-    for thread in thread_key_to_thread.values():
-        thread_size = thread["thread_size"]
-        thread_size_counts[thread_size] += 1
-
-        outbound_email_count = sum(
-            1
-            for email in thread["emails"]
-            if extract_participant_emails(email["author"], "").intersection(my_email_addresses)
-        )
-        inbound_email_count = thread_size - outbound_email_count
-        thread_outbound_email_counts[thread_size] += outbound_email_count
-        thread_inbound_email_counts[thread_size] += inbound_email_count
-
-        thread_size_to_threads.setdefault(thread_size, []).append(thread)
-
-    sorted_thread_size_to_threads = {
-        str(thread_size): thread_size_to_threads[thread_size]
-        for thread_size in sorted(thread_size_to_threads, reverse=True)
-    }
-
-    return (
-        sorted_thread_size_to_threads,
-        thread_size_counts,
-        thread_inbound_email_counts,
-        thread_outbound_email_counts,
-    )
-
-##################################################################
-# Helper 19: Save the final post-LM LM-threads-by-size JSON file #
-##################################################################
-def save_lm_threads_by_size_json(thread_size_to_threads, output_path):
-    import json
-    from pathlib import Path
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, mode="w", encoding="utf-8") as json_file:
-        json.dump(thread_size_to_threads, json_file, ensure_ascii=False, indent=2)
-    print(f"save_lm_threads_by_size_json: saved dataset to {output_path}")
-
-#####################################################################
-# Helper 20: Detect template text in the unquoted portion of a body #
-#####################################################################
-def has_template_in_unquoted(body, templates):
-    unquoted = normalize_email_body(get_unquoted_text(body))
-    return any(template in unquoted for template in templates)
-
-#################################################
-# Helper 21: Save tabular dataset rows as a CSV #
-#################################################
-def save_dataset(rows, output_path, delimiter=";"):
-    import csv
-    with open(output_path, mode="w", newline="") as csv_file:
-        writer = csv.writer(csv_file, delimiter=delimiter)
-        writer.writerows(rows)
-    print(f"save_dataset: saved dataset to {output_path}")
-
 ################################################
-# Helper 22: Save tabular dataset rows as JSON #
+# Helper 24: Build stable key per email sample #
 ################################################
-def save_dataset_as_json(rows, output_path):
-    import json
-
-    if not rows:
-        payload = []
-    else:
-        header = rows[0]
-        payload = [
-            dict(zip(header, row))
-            for row in rows[1:]
-        ]
-
-    with open(output_path, mode="w", encoding="utf-8") as json_file:
-        json.dump(payload, json_file, ensure_ascii=False, indent=2)
-    print(f"save_dataset_as_json: saved dataset to {output_path}")
-
-####################################################################
-# Helper 23: Build email samples grouped by folderURI and threadID #
-####################################################################
-def build_samples_by_folder_uri_and_thread_id(
-        messages_with_threads_header,
-        messages_with_threads_data,
-        my_email_addresses,
-        upm_domains,
-        remove_internal_upm_messages,
-        ):
-    import re
-
-    folder_uri_index = messages_with_threads_header.index("folderURI")
-    thread_id_index = messages_with_threads_header.index("threadID")
-    subject_index = messages_with_threads_header.index("c1subject")
-    body_index = messages_with_threads_header.index("c0body")
-    author_index = messages_with_threads_header.index("c3author")
-    recipients_index = messages_with_threads_header.index("c4recipients")
-
-    my_email_addresses = set(
-        email.lower()
-        for email in (my_email_addresses or [])
-        if email
-    )
-
-    def extract_emails(text):
-        if not text:
-            return set()
-        return set(re.findall(r'[\w\.-]+@[\w\.-]+', text.lower()))
-
-    folder_uri_to_thread_id_to_rows = {}
-    for row in messages_with_threads_data:
-        folder_uri = row[folder_uri_index]
-        thread_id = row[thread_id_index]
-        if folder_uri not in folder_uri_to_thread_id_to_rows:
-            folder_uri_to_thread_id_to_rows[folder_uri] = {}
-        if thread_id not in folder_uri_to_thread_id_to_rows[folder_uri]:
-            folder_uri_to_thread_id_to_rows[folder_uri][thread_id] = []
-        folder_uri_to_thread_id_to_rows[folder_uri][thread_id].append(row)
-
-    folder_uri_to_thread_id_to_samples = {}
-    discarded_internal_threads = []
-    for folder_uri, thread_id_to_rows in folder_uri_to_thread_id_to_rows.items():
-        thread_id_to_samples = {}
-
-        for thread_id, thread_rows in thread_id_to_rows.items():
-            thread_emails = []
-            for row in thread_rows:
-                thread_emails.append({
-                    "subject": row[subject_index],
-                    "body": row[body_index],
-                    "author": row[author_index],
-                    "recipients": row[recipients_index],
-                })
-
-            if (
-                remove_internal_upm_messages
-                and
-                thread_emails
-                and all(
-                    is_upm_internal(
-                        email["author"],
-                        email["recipients"],
-                        upm_domains,
-                    )
-                    for email in thread_emails
-                )
-            ):
-                discarded_internal_threads.append({
-                    "folder_uri": folder_uri,
-                    "thread_id": thread_id,
-                    "thread_size": len(thread_emails),
-                    "emails": thread_emails,
-                })
-                continue
-
-            thread_samples = []
-            thread_size = len(thread_emails)
-            for email_index, email in enumerate(thread_emails):
-                email_recipient_emails = extract_emails(email["recipients"])
-                is_inbound_to_director = bool(email_recipient_emails.intersection(my_email_addresses))
-                if not is_inbound_to_director:
-                    continue
-
-                context_emails = thread_emails[:email_index]
-                later_emails = thread_emails[email_index + 1:]
-                other_gold_reply_candidates = [
-                    later_email
-                    for later_email in later_emails
-                    if bool(extract_emails(later_email["author"]).intersection(my_email_addresses))
-                ]
-
-                email_author_emails = extract_emails(email["author"])
-                gold_reply = None
-                if other_gold_reply_candidates:
-                    for candidate in other_gold_reply_candidates:
-                        candidate_recipient_emails = extract_emails(candidate["recipients"])
-                        if email_author_emails.intersection(candidate_recipient_emails):
-                            gold_reply = candidate
-                            break
-                    if gold_reply is None:
-                        gold_reply = other_gold_reply_candidates[0]
-
-                thread_samples.append({
-                    "folder_uri": folder_uri,
-                    "thread_id": thread_id,
-                    "email": email,
-                    "context_emails": context_emails,
-                    "gold_reply": gold_reply,
-                    "other_gold_reply_candidates": [
-                        candidate
-                        for candidate in other_gold_reply_candidates
-                        if candidate != gold_reply
-                    ],
-                    "thread_size": thread_size,
-                })
-
-            if thread_samples:
-                thread_id_to_samples[thread_id] = thread_samples
-
-        if thread_id_to_samples:
-            folder_uri_to_thread_id_to_samples[folder_uri] = thread_id_to_samples
-
-    return folder_uri_to_thread_id_to_samples, discarded_internal_threads
-
-#######################################################
-# Helper 24: Count built samples grouped by folderURI #
-#######################################################
-def get_sample_counts_by_folder_uri(folder_uri_to_thread_id_to_samples):
-    folder_uri_to_sample_count = {}
-    for folder_uri, thread_id_to_samples in folder_uri_to_thread_id_to_samples.items():
-        sample_count = get_nested_values_length_sum(thread_id_to_samples, depth=1)
-        folder_uri_to_sample_count[folder_uri] = sample_count
-
-    return folder_uri_to_sample_count
-
-############################################################
-# Helper 25: Sum nested value lengths to a requested depth #
-############################################################
-def get_nested_values_length_sum(dictionary, depth):
-    if depth == 1:
-        return sum(len(value) for value in dictionary.values())
-    return sum(
-        get_nested_values_length_sum(value, depth - 1)
-        for value in dictionary.values()
-    )
-
-###################################################################
-# Helper 26: Split grouped samples into train, dev, and test sets #
-###################################################################
-def split_samples_by_split_name(folder_uri_to_thread_id_to_samples, train_split_pct, dev_split_pct, seed):
-    import random
-
-    rng = random.Random(seed)
-    split_names = ["train", "dev", "test"]
-    split_name_to_samples = {
-        split_name: []
-        for split_name in split_names
-    }
-
-    for folder_uri, thread_id_to_samples in folder_uri_to_thread_id_to_samples.items():
-        n_samples_in_folder = get_nested_values_length_sum(thread_id_to_samples, depth=1)
-        split_name_to_n_samples_goal_in_folder = {
-            "train": int(train_split_pct * n_samples_in_folder),
-            "dev": int(dev_split_pct * n_samples_in_folder),
-        }
-        split_name_to_n_samples_goal_in_folder["test"] = (
-            n_samples_in_folder
-            - split_name_to_n_samples_goal_in_folder["train"]
-            - split_name_to_n_samples_goal_in_folder["dev"]
-        )
-        split_name_to_n_samples_assigned_in_folder = {
-            split_name: 0
-            for split_name in split_names
-        }
-
-        thread_id_to_samples_items = list(thread_id_to_samples.items())
-        rng.shuffle(thread_id_to_samples_items)
-
-        for thread_id, samples in thread_id_to_samples_items:
-            n_samples_in_thread = len(samples)
-            split_names_that_fit = [
-                split_name
-                for split_name in split_names
-                if (
-                    split_name_to_n_samples_assigned_in_folder[split_name]
-                    + n_samples_in_thread
-                ) <= split_name_to_n_samples_goal_in_folder[split_name]
-            ]
-
-            if split_names_that_fit:
-                best_split_name = max(
-                    split_names_that_fit,
-                    key=lambda split_name: (
-                        split_name_to_n_samples_goal_in_folder[split_name]
-                        - split_name_to_n_samples_assigned_in_folder[split_name]
-                    ),
-                )
-            else:
-                best_split_name = min(
-                    split_names,
-                    key=lambda split_name: (
-                        split_name_to_n_samples_assigned_in_folder[split_name]
-                        + n_samples_in_thread
-                        - split_name_to_n_samples_goal_in_folder[split_name]
-                    ),
-                )
-            split_name_to_n_samples_assigned_in_folder[best_split_name] += n_samples_in_thread
-            split_name_to_samples[best_split_name].extend(samples)
-
-    return split_name_to_samples
-
-#####################################################
-# Helper 27: Build a stable key for an email sample #
-#####################################################
 def build_email_sample_key(email_sample):
     return (
         email_sample["folder_uri"],
@@ -1332,17 +1671,17 @@ def build_email_sample_key(email_sample):
     )
 
 ###################################################################
-# Helper 28: Build intermediate and final rows for M3 fine-tuning #
+# Helper 25: Build intermediate and final rows for M3 fine-tuning #
 ###################################################################
 def build_finetune_rows(
         data_variant_to_oracle_results,
         data_variant_to_rrf_results,
         query_types,
         ):
-    from config.decoder import QUERY_REWRITER_SECTION_TO_MAX_QUERIES
+    from config.decoder import QUERY_TYPE_TO_N_MAX_QUERIES
     from helpers.eval import get_text_to_rerank_from_payload
 
-    all_query_types = list(QUERY_REWRITER_SECTION_TO_MAX_QUERIES) + ["reranker", "original_email"]
+    all_query_types = list(QUERY_TYPE_TO_N_MAX_QUERIES) + ["reranker", "original_email"]
     first_data_variant_oracle_results = next(iter(data_variant_to_oracle_results.values()))
     email_sample_key_to_intermediate_row = {}
 
@@ -1461,191 +1800,3 @@ def build_finetune_rows(
                 })
 
     return intermediate_rows, finetune_rows
-
-########################################################################
-# Helper 29: Format grouped thread emails as a single promptable block #
-########################################################################
-def format_email_thread_text(emails):
-    formatted_messages = []
-    for email in emails:
-        subject = (email.get("subject") or "").strip()
-        body = (email.get("body") or "").strip()
-        author = (email.get("author") or "").strip()
-        recipients = (email.get("recipients") or "").strip()
-
-        formatted_messages.append(
-            "-----\n"
-            f"From: {author}\n"
-            f"To: {recipients}\n"
-            f"Subject: {subject}\n\n"
-            f"{body}\n"
-            "-----"
-        )
-    return "\n".join(formatted_messages)
-
-#########################################################################
-# Helper 30: Build email-thread curator candidates from grouped threads #
-#########################################################################
-def build_email_thread_candidates_from_grouped_threads(grouped_threads):
-    thread_candidates = []
-    for grouped_thread in grouped_threads:
-        emails = grouped_thread.get("emails") or []
-        thread_candidates.append({
-            "folder_uri": grouped_thread["folder_uri"],
-            "thread_id": str(grouped_thread["thread_id"]),
-            "weak_thread_id_hints": list(grouped_thread.get("weak_thread_id_hints") or []),
-            "thread_size": grouped_thread.get("thread_size", len(emails)),
-            "emails": emails,
-            "thread_text": format_email_thread_text(emails),
-        })
-    return thread_candidates
-
-####################################################################
-# Helper 31: Build email-KB variant chunks from one curated thread #
-####################################################################
-def build_email_thread_knowledge_base_chunks(candidate, curator_output):
-    abstract_chunks = []
-    summary_chunks = []
-    cleaned_text_chunks = []
-    q_and_a_chunks = []
-
-    abstract = curator_output.get("abstract")
-    if abstract:
-        abstract_chunks.append({
-            "folder_uri": candidate["folder_uri"],
-            "thread_id": candidate["thread_id"],
-            "weak_thread_id_hints": candidate["weak_thread_id_hints"],
-            "thread_size": candidate["thread_size"],
-            "text": abstract,
-        })
-
-    summary = curator_output.get("summary")
-    if summary:
-        summary_chunks.append({
-            "folder_uri": candidate["folder_uri"],
-            "thread_id": candidate["thread_id"],
-            "weak_thread_id_hints": candidate["weak_thread_id_hints"],
-            "thread_size": candidate["thread_size"],
-            "text": summary,
-        })
-
-    cleanedtext = curator_output.get("cleanedtext")
-    if cleanedtext:
-        cleaned_text_chunks.append({
-            "folder_uri": candidate["folder_uri"],
-            "thread_id": candidate["thread_id"],
-            "weak_thread_id_hints": candidate["weak_thread_id_hints"],
-            "thread_size": candidate["thread_size"],
-            "text": cleanedtext,
-        })
-
-    pairs = [
-        {
-            "question": question,
-            "answer": answer,
-        }
-        for question, answer in zip(
-            curator_output.get("questions") or [],
-            curator_output.get("answers") or [],
-        )
-    ]
-    if pairs:
-        q_and_a_chunks.append({
-            "folder_uri": candidate["folder_uri"],
-            "thread_id": candidate["thread_id"],
-            "weak_thread_id_hints": candidate["weak_thread_id_hints"],
-            "thread_size": candidate["thread_size"],
-            "pairs": pairs,
-        })
-
-    return {
-        "email_lm_abstract_chunks": abstract_chunks,
-        "email_lm_summary_chunks": summary_chunks,
-        "email_lm_cleaned_text_chunks": cleaned_text_chunks,
-        "email_lm_q_and_a_chunks": q_and_a_chunks,
-    }
-
-######################################################################
-# Helper 32: Prepare knowledge-base records as encoder-ready batches #
-######################################################################
-def prepare_batches_for_knowledge_base_variant(
-        variant,
-        records,
-        batch_size,
-        encode_timestamp,
-        ):
-    q_and_a_variants = {
-        "lm_q_and_a_chunks",
-        "email_lm_q_and_a_chunks",
-    }
-    q_only_variants = {
-        "lm_q_and_a_for_q_only_chunks",
-        "email_lm_q_and_a_for_q_only_chunks",
-    }
-
-    batches = []
-    current_batch = {
-        "texts": [],
-        "payloads": [],
-        "point_ids": [],
-    }
-    next_point_id = 0
-
-    for record in records:
-        if variant in q_and_a_variants or variant in q_only_variants:
-            for pair_index, pair in enumerate(record["pairs"], start=1):
-                if variant in q_and_a_variants:
-                    text = f"Q: {pair['question']}\nA: {pair['answer']}"
-                else:
-                    text = pair["question"]
-
-                payload = {
-                    **record,
-                    "variant": variant,
-                    "timestamp": encode_timestamp,
-                }
-                payload.pop("pairs", None)
-                payload.update({
-                    "pair_index": pair_index,
-                    "question": pair["question"],
-                    "answer": pair["answer"],
-                })
-                if "decoder_token_count" in pair:
-                    payload["decoder_token_count"] = pair["decoder_token_count"]
-                if "encoder_token_count" in pair:
-                    payload["encoder_token_count"] = pair["encoder_token_count"]
-
-                current_batch["texts"].append(text)
-                current_batch["payloads"].append(payload)
-                current_batch["point_ids"].append(next_point_id)
-                next_point_id += 1
-
-                if len(current_batch["texts"]) == batch_size:
-                    batches.append(current_batch)
-                    current_batch = {
-                        "texts": [],
-                        "payloads": [],
-                        "point_ids": [],
-                    }
-        else:
-            current_batch["texts"].append(record["text"])
-            current_batch["payloads"].append({
-                **record,
-                "variant": variant,
-                "timestamp": encode_timestamp,
-            })
-            current_batch["point_ids"].append(next_point_id)
-            next_point_id += 1
-
-            if len(current_batch["texts"]) == batch_size:
-                batches.append(current_batch)
-                current_batch = {
-                    "texts": [],
-                    "payloads": [],
-                    "point_ids": [],
-                }
-
-    if current_batch["texts"]:
-        batches.append(current_batch)
-
-    return batches
