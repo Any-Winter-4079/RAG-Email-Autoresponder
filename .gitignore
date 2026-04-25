@@ -1,10 +1,12 @@
 data/discarded_threads/
 data/email_messages/
 data/finetune/
-data/knowledge_base_messages/
+data/knowledge_base/
 data/split_datasets/
+data/threads/
 eval/results/
 eval/cache/
+
 .DS_Store
 __pycache__/
 .env
