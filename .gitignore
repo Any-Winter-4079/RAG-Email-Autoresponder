@@ -1,3 +1,4 @@
+human_review/results/
 data/discarded_threads/
 data/email_messages/
 data/finetune/
@@ -6,7 +7,11 @@ data/split_datasets/
 data/threads/
 eval/results/
 eval/cache/
-
+finetune/oracle_score_results
+finetune/training_logs
+finetune/*.json
+models/
+Plantilla_TFM_ETSIINF/
 .DS_Store
 __pycache__/
 .env
