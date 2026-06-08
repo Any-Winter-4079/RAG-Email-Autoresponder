@@ -1,0 +1,714 @@
+diff --git a/FlagEmbedding/abc/finetune/embedder/AbsArguments.py b/FlagEmbedding/abc/finetune/embedder/AbsArguments.py
+index 923f131..e03bce6 100644
+--- a/FlagEmbedding/abc/finetune/embedder/AbsArguments.py
++++ b/FlagEmbedding/abc/finetune/embedder/AbsArguments.py
+@@ -137,5 +137,7 @@ class AbsEmbedderTrainingArguments(TrainingArguments):
+     fix_position_embedding: bool = field(default=False, metadata={"help": "Freeze the parameters of position embeddings"})
+     sentence_pooling_method: str = field(default='cls', metadata={"help": "the pooling method. Available options: cls, mean, last_token. Default: cls", "choices": ['cls', 'mean', 'last_token']})
+     normalize_embeddings: bool = field(default=True, metadata={"help": "whether to normalize the embeddings"})
++    filter_duplicate_positive_passages: bool = field(default=False, metadata={"help": "whether to mask duplicate positive passages from in-batch negatives"})
++    filter_group_duplicate_positive_passages: bool = field(default=False, metadata={"help": "whether to mask passages matching any positive passage from the query group"})
+     sub_batch_size: Optional[int] = field(default=None, metadata={"help": "sub batch size for training"})
+     kd_loss_type: str = field(default='kl_div', metadata={"help": "the loss type for knowledge distillation. Available options: kl_div, m3_kd_loss. Default: kl_div.", "choices": ['kl_div', 'm3_kd_loss']})
+diff --git a/FlagEmbedding/abc/finetune/embedder/AbsDataset.py b/FlagEmbedding/abc/finetune/embedder/AbsDataset.py
+index 4da7dbe..610fdf7 100644
+--- a/FlagEmbedding/abc/finetune/embedder/AbsDataset.py
++++ b/FlagEmbedding/abc/finetune/embedder/AbsDataset.py
+@@ -107,6 +107,7 @@ class AbsEmbedderTrainDataset(Dataset):
+         train_group_size = self.args.train_group_size
+ 
+         query = data['query']
++        group_id = data['group_id'] if 'group_id' in data else item
+         if self.args.query_instruction_for_retrieval is not None:
+             query = self.args.query_instruction_format.format(
+                 data['prompt'] if 'prompt' in data else self.args.query_instruction_for_retrieval,
+@@ -118,6 +119,9 @@ class AbsEmbedderTrainDataset(Dataset):
+ 
+         assert isinstance(data['pos'], list) and isinstance(data['neg'], list)
+ 
++        # Keep the full positive list so group filtering can compare against every
++        # known positive, including positives not sampled as this row's softmax target.
++        batch_positive_passages = list(data['pos'])
+         pos_idx = random.choice(list(range(len(data['pos']))))
+         passages.append(self._shuffle_text(data['pos'][pos_idx]))
+ 
+@@ -148,7 +152,7 @@ class AbsEmbedderTrainDataset(Dataset):
+                 for p in passages
+             ]
+ 
+-        return query, passages, teacher_scores
++        return query, passages, teacher_scores, group_id, batch_positive_passages
+ 
+ @dataclass
+ class AbsEmbedderCollator(DataCollatorWithPadding):
+@@ -158,20 +162,42 @@ class AbsEmbedderCollator(DataCollatorWithPadding):
+     query_max_len: int = 32
+     passage_max_len: int = 128
+     sub_batch_size: int = -1
++    filter_group_duplicate_positive_passages: bool = False
+ 
+     def __call__(self, features):
+         queries = [f[0] for f in features]
+         passages = [f[1] for f in features]
+         teacher_scores = [f[2] for f in features]
++        group_ids = [f[3] if len(f) > 3 else i for i, f in enumerate(features)]
++        batch_positive_passages_by_row = [f[4] if len(f) > 4 else [] for f in features]
+         if teacher_scores[0] is None:
+             teacher_scores = None
+         elif isinstance(teacher_scores[0], list):
+             teacher_scores = sum(teacher_scores, [])
+ 
++        if self.filter_group_duplicate_positive_passages:
++            batch_positive_texts = []
++            batch_positives_group_ids = []
++            for group_id, feature_batch_positive_passages in zip(group_ids, batch_positive_passages_by_row):
++                batch_positive_texts.extend(feature_batch_positive_passages)
++                batch_positives_group_ids.extend(
++                    [group_id] * len(feature_batch_positive_passages)
++                )
++        else:
++            batch_positive_texts = None
++            batch_positives_group_ids = None
++
+         if isinstance(queries[0], list):
++            group_ids = [
++                group_id
++                for group_id, feature_queries in zip(group_ids, queries)
++                for _ in feature_queries
++            ]
+             queries = sum(queries, [])
+         if isinstance(passages[0], list):
+             passages = sum(passages, [])
++        if not self.filter_group_duplicate_positive_passages:
++            group_ids = None
+ 
+         queries_inputs = self.tokenizer(
+             queries,
+@@ -185,6 +211,15 @@ class AbsEmbedderCollator(DataCollatorWithPadding):
+             max_length=self.passage_max_len,
+             return_tensors=None
+         )
++        if batch_positive_texts is not None:
++            batch_positive_inputs = self.tokenizer(
++                batch_positive_texts,
++                truncation=True,
++                max_length=self.passage_max_len,
++                return_tensors=None
++            )
++        else:
++            batch_positive_inputs = None
+ 
+         if self.sub_batch_size is None or self.sub_batch_size <= 0:
+             q_collated = self.tokenizer.pad(
+@@ -201,6 +236,16 @@ class AbsEmbedderCollator(DataCollatorWithPadding):
+                 pad_to_multiple_of=self.pad_to_multiple_of,
+                 return_tensors=self.return_tensors
+             )
++            if batch_positive_inputs is not None:
++                batch_positive_collated = self.tokenizer.pad(
++                    batch_positive_inputs,
++                    padding=self.padding,
++                    max_length=self.passage_max_len,
++                    pad_to_multiple_of=self.pad_to_multiple_of,
++                    return_tensors=self.return_tensors
++                )
++            else:
++                batch_positive_collated = None
+         else:
+             batch_size = self.sub_batch_size
+ 
+@@ -234,12 +279,27 @@ class AbsEmbedderCollator(DataCollatorWithPadding):
+                     pad_to_multiple_of=self.pad_to_multiple_of,
+                     return_tensors=self.return_tensors
+                 ))
+-        return {
++            if batch_positive_inputs is not None:
++                batch_positive_collated = self.tokenizer.pad(
++                    batch_positive_inputs,
++                    padding=self.padding,
++                    max_length=self.passage_max_len,
++                    pad_to_multiple_of=self.pad_to_multiple_of,
++                    return_tensors=self.return_tensors
++                )
++            else:
++                batch_positive_collated = None
++        batch = {
+             "queries": q_collated,
+             "passages": d_collated,
+             "teacher_scores": teacher_scores,
+             "no_in_batch_neg_flag": False
+         }
++        if group_ids is not None:
++            batch["group_ids"] = group_ids
++            batch["batch_positive_passages"] = batch_positive_collated
++            batch["batch_positives_group_ids"] = batch_positives_group_ids
++        return batch
+ 
+ 
+ class AbsEmbedderSameDatasetTrainDataset(AbsEmbedderTrainDataset):
+@@ -409,8 +469,8 @@ class AbsEmbedderSameDatasetTrainDataset(AbsEmbedderTrainDataset):
+         batch_indices = batch_indices[self.process_index * cur_batch_size: (self.process_index + 1) * cur_batch_size]
+         batch_data = self.dataset[batch_indices]
+         self.step += 1
+-        queries, passages, teacher_scores = self._create_batch_data(batch_raw_data=batch_data)
+-        return queries, passages, teacher_scores, no_in_batch_neg_flag
++        queries, passages, teacher_scores, group_ids = self._create_batch_data(batch_raw_data=batch_data)
++        return queries, passages, teacher_scores, no_in_batch_neg_flag, group_ids
+ 
+     def _get_train_group_size(self, batch_raw_data):
+         """Get the training group size and data type.
+@@ -449,7 +509,7 @@ class AbsEmbedderSameDatasetTrainDataset(AbsEmbedderTrainDataset):
+             List[str]: Documents with instruction format.
+             List[float]: Teacher scores for model distillation.
+         """
+-        queries, passages, teacher_scores = [], [], []
++        queries, passages, teacher_scores, group_ids = [], [], [], []
+ 
+         train_group_size, data_type = self._get_train_group_size(batch_raw_data)
+ 
+@@ -463,6 +523,7 @@ class AbsEmbedderSameDatasetTrainDataset(AbsEmbedderTrainDataset):
+                     batch_raw_data['query'][i]
+                 )
+             )
++            group_ids.append(batch_raw_data['group_id'][i] if 'group_id' in batch_raw_data else i)
+             tmp_passages = []
+             pos_idx = random.choice(list(range(len(batch_raw_data['pos'][i]))))
+             pos = self._shuffle_text(batch_raw_data['pos'][i][pos_idx])
+@@ -507,7 +568,7 @@ class AbsEmbedderSameDatasetTrainDataset(AbsEmbedderTrainDataset):
+                 if len(teacher_scores) > 0 and len(passages) > 0:
+                     assert len(teacher_scores) == len(passages)
+ 
+-        return queries, passages, teacher_scores
++        return queries, passages, teacher_scores, group_ids
+ 
+ 
+ @dataclass
+@@ -523,12 +584,16 @@ class AbsEmbedderSameDatasetCollator(DataCollatorWithPadding):
+     query_max_len: int = 32
+     passage_max_len: int = 128
+     sub_batch_size: int = -1
++    filter_group_duplicate_positive_passages: bool = False
+ 
+     def __call__(self, features):
+         queries = features[0][0]
+         passages = features[0][1]
+         teacher_scores = features[0][2]
+         no_in_batch_neg_flag = features[0][3]
++        group_ids = features[0][4] if len(features[0]) > 4 else list(range(len(queries)))
++        if not self.filter_group_duplicate_positive_passages:
++            group_ids = None
+ 
+         queries_inputs = self.tokenizer(
+             queries,
+@@ -596,12 +661,15 @@ class AbsEmbedderSameDatasetCollator(DataCollatorWithPadding):
+         if isinstance(teacher_scores, list) and len(teacher_scores) == 0:
+             teacher_scores = None
+ 
+-        return {
++        batch = {
+             "queries": q_collated,
+             "passages": d_collated,
+             "teacher_scores": teacher_scores,
+             "no_in_batch_neg_flag": no_in_batch_neg_flag
+         }
++        if group_ids is not None:
++            batch["group_ids"] = group_ids
++        return batch
+ 
+ 
+ class EmbedderTrainerCallbackForDataRefresh(TrainerCallback):
+diff --git a/FlagEmbedding/abc/finetune/embedder/AbsModeling.py b/FlagEmbedding/abc/finetune/embedder/AbsModeling.py
+index de8c80b..23488ea 100644
+--- a/FlagEmbedding/abc/finetune/embedder/AbsModeling.py
++++ b/FlagEmbedding/abc/finetune/embedder/AbsModeling.py
+@@ -44,6 +44,8 @@ class AbsEmbedderModel(ABC, nn.Module):
+         temperature: float = 1.0,
+         sub_batch_size: int = -1,
+         kd_loss_type: str = 'kl_div',
++        filter_duplicate_positive_passages: bool = False,
++        filter_group_duplicate_positive_passages: bool = False,
+     ):
+         nn.Module.__init__(self)
+         self.model = base_model
+@@ -59,6 +61,8 @@ class AbsEmbedderModel(ABC, nn.Module):
+ 
+         self.sub_batch_size = sub_batch_size
+         self.kd_loss_type = kd_loss_type
++        self.filter_duplicate_positive_passages = filter_duplicate_positive_passages
++        self.filter_group_duplicate_positive_passages = filter_group_duplicate_positive_passages
+ 
+     @abstractmethod
+     def encode(self, features):
+@@ -137,7 +141,11 @@ class AbsEmbedderModel(ABC, nn.Module):
+         loacl_scores = self.get_local_score(q_reps, p_reps, all_scores)
+         return loacl_scores
+ 
+-    def _compute_no_in_batch_neg_loss(self, q_reps, p_reps, teacher_targets=None, compute_score_func=None, **kwargs):
++    def _compute_no_in_batch_neg_loss(
++        self, q_reps, p_reps, teacher_targets=None, passages=None, group_ids=None,
++        batch_positive_passages=None, batch_positives_group_ids=None,
++        compute_score_func=None, **kwargs
++    ):
+         """
+         Compute loss when using no in-batch negatives and no cross-device negatives
+         """
+@@ -159,17 +167,184 @@ class AbsEmbedderModel(ABC, nn.Module):
+ 
+         return local_scores, loss
+ 
+-    def _compute_in_batch_neg_loss(self, q_reps, p_reps, teacher_targets=None, compute_score_func=None, **kwargs):
++    def _get_passage_input_ids(self, passages, device):
++        if not isinstance(passages, list):
++            return passages['input_ids'].to(device)
++
++        input_ids_list = [sub_batch_passages['input_ids'] for sub_batch_passages in passages] # with e.g., sub_batch_passages['input_ids'],
++        # a tensor of shape (n_passages_in_sub_batch, seq_len)
++        max_length = max(input_ids.size(1) for input_ids in input_ids_list)
++        if self.tokenizer is None or self.tokenizer.pad_token_id is None:
++            raise ValueError("Tokenizer pad token id is required to compare passage input ids.")
++        pad_token_id = self.tokenizer.pad_token_id
++        padding_side = self.tokenizer.padding_side
++        padded_input_ids_list = []
++        for input_ids in input_ids_list:
++            padding = max_length - input_ids.size(1)
++            if padding > 0:
++                if padding_side == 'right':
++                    input_ids = F.pad(input_ids, (0, padding), value=pad_token_id)
++                else:
++                    input_ids = F.pad(input_ids, (padding, 0), value=pad_token_id)
++            padded_input_ids_list.append(input_ids)
++        # (batch_size * group_size, max_seq_len), e.g., (32, max_seq_len)
++        return torch.cat(padded_input_ids_list, dim=0).to(device)
++
++    def _pad_input_ids_to_length(self, input_ids, max_length):
++        if input_ids.size(1) == max_length:
++            return input_ids
++        if self.tokenizer is None or self.tokenizer.pad_token_id is None:
++            raise ValueError("Tokenizer pad token id is required to compare passage input ids.")
++        padding = max_length - input_ids.size(1)
++        if self.tokenizer.padding_side == 'right':
++            return F.pad(input_ids, (0, padding), value=self.tokenizer.pad_token_id)
++        return F.pad(input_ids, (padding, 0), value=self.tokenizer.pad_token_id)
++
++    def _mask_duplicate_positive_passages(self, scores, targets, passages):
++        # scores: (batch_size, batch_size * group_size), e.g., (4, 32)
++        # targets: (batch_size), e.g., (4)
++        # passages, e.g., the 32 as:
++        # [
++        #     {
++        #       "input_ids": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #       "attention_mask": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #     },
++        #     {
++        #       "input_ids": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #       "attention_mask": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #     },
++        #     ...
++        # ]
++        if passages is None:
++            raise ValueError("Passages are required to mask duplicate positive passages.")
++
++        passage_input_ids = self._get_passage_input_ids(passages, scores.device)
++        target_input_ids = passage_input_ids[targets]
++        # e.g., (1, 32, max_seq_len) eq (4, 1, max_seq_len) -> (4, 32, max_seq_len) boolean matrix
++        # of matching tokens, then when all values along the final/max_seq_len dimension are True,
++        # it is set to True (AND/all op) resulting in (4, 32) that marks, for the positive for
++        # each of the 4 queries, across the 32 total passages, which are exactly equal to it
++        # (i.e., for query 1's positive, which of the 32 passages are equal to it,
++        # for query 2's positive passage, which of the 32 passages are equal to it, etc.)
++        duplicate_positive_passages = passage_input_ids.unsqueeze(0).eq(target_input_ids.unsqueeze(1)).all(dim=-1)
++        duplicate_positive_passages[torch.arange(scores.size(0), device=scores.device), targets] = False # except the query's positive (which should not be masked as is needed in softmax)
++        return scores.masked_fill(duplicate_positive_passages, torch.finfo(scores.dtype).min) # set masked positions to min possible scores for softmax to for all purposes ignore them
++
++    def _mask_group_duplicate_positive_passages(
++        self, scores, targets, passages, group_ids,
++        batch_positive_passages, batch_positives_group_ids
++    ):
++        if (
++            passages is None
++            or group_ids is None
++            or batch_positive_passages is None
++            or batch_positives_group_ids is None
++        ):
++            raise ValueError("Passages, group ids, and batch positive passages are required to mask group duplicate positive passages.")
++        if len(group_ids) != scores.size(0):
++            raise ValueError("Number of group ids must match the number of query scores.")
++
++        # batch_positive_passages contains all positive passages for the queries in the
++        # current batch, not only the one positive sampled as each query's softmax target.
++        # The collator flattens them across the batch: if batch query 0 has positives
++        # [A, B] and batch query 1 has positives [C, D, E], then batch_positive_passages
++        # is [A, B, C, D, E], and batch_positives_group_ids is [g0, g0, g1, g1, g1].
++        # Here n_batch_positive_passages is the total flattened count of those positives
++        # for the current batch
++        passage_input_ids = self._get_passage_input_ids(passages, scores.device)
++        batch_positive_input_ids = self._get_passage_input_ids(batch_positive_passages, scores.device)
++        if len(batch_positives_group_ids) != batch_positive_input_ids.size(0):
++            raise ValueError("Number of batch positive group ids must match the number of batch positive passages.")
++        max_length = max(passage_input_ids.size(1), batch_positive_input_ids.size(1))
++        passage_input_ids = self._pad_input_ids_to_length(passage_input_ids, max_length)
++        batch_positive_input_ids = self._pad_input_ids_to_length(
++            batch_positive_input_ids, max_length
++        )
++
++        # (1, batch_size * group_size, max_seq_len) eq (n_batch_positive_passages, 1, max_seq_len)
++        # -> (n_batch_positive_passages, batch_size * group_size, max_seq_len) boolean matrix
++        # of matching tokens, then when all values along the final/max_seq_len dimension are True,
++        # it is set to True (AND/all op) resulting in (n_batch_positive_passages, batch_size * group_size).
++        # For each batch positive passage, this marks which denominator passages are exactly equal to it
++        batch_positive_matches = passage_input_ids.unsqueeze(0).eq(batch_positive_input_ids.unsqueeze(1)).all(dim=-1)
++        # (batch_size, n_batch_positive_passages), where same_group[i, r] is True when
++        # batch positive passage r belongs to query i's group
++        same_group = torch.tensor(
++            [
++                [
++                    group_id == batch_positive_group_id
++                    for batch_positive_group_id in batch_positives_group_ids
++                ]
++                for group_id in group_ids
++            ],
++            device=scores.device,
++            dtype=torch.bool
++        )
++        # (batch_size, n_batch_positive_passages, 1) & (1, n_batch_positive_passages, batch_size * group_size)
++        # -> (batch_size, n_batch_positive_passages, batch_size * group_size), then OR/any over
++        # batch positive passages -> (batch_size, batch_size * group_size). For each query i, this
++        # marks denominator passages that match any known positive for query i's group
++        group_duplicate_positive_passages = (same_group.unsqueeze(-1) & batch_positive_matches.unsqueeze(0)).any(dim=1)
++        # query i's sampled positive stays unmasked because it is the target for the softmax
++        group_duplicate_positive_passages[torch.arange(scores.size(0), device=scores.device), targets] = False
++        return scores.masked_fill(group_duplicate_positive_passages, torch.finfo(scores.dtype).min)
++
++    def _compute_in_batch_neg_loss(
++        self, q_reps, p_reps, teacher_targets=None, passages=None, group_ids=None,
++        batch_positive_passages=None, batch_positives_group_ids=None,
++        compute_score_func=None, **kwargs
++    ):
+         """
+         Compute loss when only using in-batch negatives
+         """
++        # given batch_size=4 and group_size=8:
++        # 1. q_reps contains the 4 query representations/embeddings;
++        # sparse: shape (4, vocab_size)
++        # dense: shape (4, hidden_dim)
++        # multi-vector: shape (4, query_seq_len_without_cls, colbert_dim)
++
++        # 2. p_reps contains the 32 passage representations/embeddings;
++        # sparse: shape (32, vocab_size)
++        # dense: shape (32, hidden_dim)
++        # multi-vector: shape (32, passage_seq_len_without_cls, colbert_dim)
++
++        # 3. passages contains the 32 passages (1 positive and 7 negatives for each of the 4 queries in the batch), e.g., as:
++        # [
++        #     {
++        #       "input_ids": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #       "attention_mask": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #     },
++        #     {
++        #       "input_ids": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #       "attention_mask": tensor(shape=(n_passages_in_sub_batch, seq_len)),
++        #     },
++        #     ...
++        # ]
++
+         group_size = p_reps.size(0) // q_reps.size(0)
+ 
+         if compute_score_func is None:
+-            scores = self.compute_score(q_reps, p_reps) # (batch_size, batch_size * group_size)
++            # for each of the batch_size queries, e.g., 4, compute a similarity score to all passages (for the query and other queries), e.g., 32,
++            # to perform IBN loss calculation
++            scores = self.compute_score(q_reps, p_reps) # (batch_size, batch_size * group_size), e.g., (4, 32)
+         else:
+             scores = compute_score_func(q_reps, p_reps, **kwargs)   # (batch_size, batch_size * group_size)
+ 
++        idxs = torch.arange(q_reps.size(0), device=q_reps.device, dtype=torch.long)
++        # given batch_size=4 and group_size=8:
++        # query 0’s positive is passage 0
++        # query 1’s positive is passage 8 (with 1-7 query 0's 7 negatives)
++        # query 2’s positive is passage 16
++        # query 3’s positive is passage 24
++        targets = idxs * group_size # (batch_size)
++        if self.filter_group_duplicate_positive_passages:
++            scores = self._mask_group_duplicate_positive_passages(
++                scores, targets, passages, group_ids,
++                batch_positive_passages, batch_positives_group_ids
++            )
++        elif self.filter_duplicate_positive_passages:
++            scores = self._mask_duplicate_positive_passages(scores, targets, passages)
++
+         if teacher_targets is not None:
+             # compute kd loss
+             if self.kd_loss_type == "kl_div":
+@@ -177,21 +352,21 @@ class AbsEmbedderModel(ABC, nn.Module):
+ 
+                 loss = self.distill_loss(self.kd_loss_type, teacher_targets, student_scores, group_size)
+ 
+-                idxs = torch.arange(q_reps.size(0), device=q_reps.device, dtype=torch.long)
+-                targets = idxs * (p_reps.size(0) // q_reps.size(0)) # (batch_size)
+                 loss += self.compute_loss(scores, targets)
+             elif self.kd_loss_type == "m3_kd_loss":
+                 loss = self.distill_loss(self.kd_loss_type, teacher_targets, scores, group_size)
+             else:
+                 raise ValueError(f"Invalid kd_loss_type: {self.kd_loss_type}")
+         else:
+-            idxs = torch.arange(q_reps.size(0), device=q_reps.device, dtype=torch.long)
+-            targets = idxs * group_size # (batch_size)
+             loss = self.compute_loss(scores, targets)
+ 
+         return scores, loss
+ 
+-    def _compute_cross_device_neg_loss(self, q_reps, p_reps, teacher_targets=None, compute_score_func=None, **kwargs):
++    def _compute_cross_device_neg_loss(
++        self, q_reps, p_reps, teacher_targets=None, passages=None, group_ids=None,
++        batch_positive_passages=None, batch_positives_group_ids=None,
++        compute_score_func=None, **kwargs
++    ):
+         """
+         Compute loss when using both in-batch negatives and cross-device negatives
+         """
+@@ -236,6 +411,9 @@ class AbsEmbedderModel(ABC, nn.Module):
+         queries: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, 
+         passages: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None,
+         teacher_scores: Union[None, List[float]] = None,
++        group_ids: Optional[List[Union[int, str]]] = None,
++        batch_positive_passages: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None,
++        batch_positives_group_ids: Optional[List[Union[int, str]]] = None,
+         no_in_batch_neg_flag: bool = False,
+     ):
+         """The computation performed at every call.
+@@ -244,6 +422,7 @@ class AbsEmbedderModel(ABC, nn.Module):
+             queries (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): Input queries. Defaults to ``None``.
+             passages (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): Input passages. Defaults to ``None``.
+             teacher_scores (Union[None, List[float]], optional): Teacher scores for distillation. Defaults to ``None``.
++            group_ids (Optional[List[Union[int, str]]], optional): Query group ids. Defaults to ``None``.
+             no_in_batch_neg_flag (bool, optional): If True, use no in-batch negatives and no cross-device negatives. Defaults to ``False``.
+ 
+         Returns:
+@@ -268,7 +447,11 @@ class AbsEmbedderModel(ABC, nn.Module):
+                 else:
+                     compute_loss_func = self._compute_in_batch_neg_loss
+ 
+-            scores, loss = compute_loss_func(q_reps, p_reps, teacher_targets=teacher_targets)
++            scores, loss = compute_loss_func(
++                q_reps, p_reps, teacher_targets=teacher_targets, passages=passages, group_ids=group_ids,
++                batch_positive_passages=batch_positive_passages,
++                batch_positives_group_ids=batch_positives_group_ids
++            )
+         else:
+             loss = None
+ 
+diff --git a/FlagEmbedding/abc/finetune/embedder/AbsRunner.py b/FlagEmbedding/abc/finetune/embedder/AbsRunner.py
+index 9466a3d..22518cd 100644
+--- a/FlagEmbedding/abc/finetune/embedder/AbsRunner.py
++++ b/FlagEmbedding/abc/finetune/embedder/AbsRunner.py
+@@ -133,6 +133,7 @@ class AbsEmbedderRunner(ABC):
+             query_max_len=self.data_args.query_max_len,
+             passage_max_len=self.data_args.passage_max_len,
+             sub_batch_size=self.training_args.sub_batch_size,
++            filter_group_duplicate_positive_passages=self.training_args.filter_group_duplicate_positive_passages,
+             pad_to_multiple_of=self.data_args.pad_to_multiple_of,
+             padding=True,
+             return_tensors="pt"
+diff --git a/FlagEmbedding/finetune/embedder/encoder_only/m3/arguments.py b/FlagEmbedding/finetune/embedder/encoder_only/m3/arguments.py
+index 8a28360..5d0ef26 100644
+--- a/FlagEmbedding/finetune/embedder/encoder_only/m3/arguments.py
++++ b/FlagEmbedding/finetune/embedder/encoder_only/m3/arguments.py
+@@ -23,3 +23,7 @@ class EncoderOnlyEmbedderM3TrainingArguments(AbsEmbedderTrainingArguments):
+     use_self_distill: bool = field(default=False, metadata={"help": "use self-distill when using unify fine-tuning"})
+     fix_encoder: bool = field(default=False, metadata={"help": "Freeze the parameters of encoder"})
+     self_distill_start_step: int = field(default=-1, metadata={"help": "Num of step when using self-distill"})
++    sparse_loss_weight: float = field(default=0.1, metadata={"help": "Weight for sparse loss in M3 unified fine-tuning"})
++    colbert_loss_weight: float = field(default=1.0, metadata={"help": "Weight for ColBERT loss in M3 unified fine-tuning"})
++    sparse_self_distill_loss_weight: float = field(default=0.1, metadata={"help": "Weight for sparse self-distillation loss in M3 unified fine-tuning"})
++    colbert_self_distill_loss_weight: float = field(default=1.0, metadata={"help": "Weight for ColBERT self-distillation loss in M3 unified fine-tuning"})
+diff --git a/FlagEmbedding/finetune/embedder/encoder_only/m3/modeling.py b/FlagEmbedding/finetune/embedder/encoder_only/m3/modeling.py
+index b37e103..bff8cd0 100644
+--- a/FlagEmbedding/finetune/embedder/encoder_only/m3/modeling.py
++++ b/FlagEmbedding/finetune/embedder/encoder_only/m3/modeling.py
+@@ -25,9 +25,15 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+         kd_loss_type (str, optional): Type of knowledge distillation loss. Defaults to ``'m3_kd_loss'``.
+         sentence_pooling_method (str, optional): Pooling method to get sentence embedding. Defaults to ``'cls'``.
+         normalize_embeddings (bool, optional): If True, normalize the embedding vector. Defaults to ``False``.
++        filter_duplicate_positive_passages (bool, optional): If True, mask duplicate positive passages from in-batch negatives. Defaults to ``False``.
++        filter_group_duplicate_positive_passages (bool, optional): If True, mask passages matching any positive passage from the query group. Defaults to ``False``.
+         unified_finetuning (bool, optional): If True, will finetune colbert vector and sparce embedding. Defaults to ``True``.
+         use_self_distill (bool, optional): If True, will do self distillation. Defaults to ``False``.
+         self_distill_start_step (int, optional): Step num to start self distillation. Defaults to ``-1``.
++        sparse_loss_weight (float, optional): Weight for sparse loss in unified fine-tuning. Defaults to ``0.1``.
++        colbert_loss_weight (float, optional): Weight for ColBERT loss in unified fine-tuning. Defaults to ``1.0``.
++        sparse_self_distill_loss_weight (float, optional): Weight for sparse self-distillation loss. Defaults to ``0.1``.
++        colbert_self_distill_loss_weight (float, optional): Weight for ColBERT self-distillation loss. Defaults to ``1.0``.
+     """
+     def __init__(
+         self,
+@@ -39,9 +45,15 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+         kd_loss_type: str = 'm3_kd_loss',
+         sentence_pooling_method: str = 'cls',
+         normalize_embeddings: bool = False,
++        filter_duplicate_positive_passages: bool = False,
++        filter_group_duplicate_positive_passages: bool = False,
+         unified_finetuning: bool = True,
+         use_self_distill: bool = False,
+-        self_distill_start_step: int = -1
++        self_distill_start_step: int = -1,
++        sparse_loss_weight: float = 0.1,
++        colbert_loss_weight: float = 1.0,
++        sparse_self_distill_loss_weight: float = 0.1,
++        colbert_self_distill_loss_weight: float = 1.0
+     ):
+         super().__init__(
+             base_model,
+@@ -50,12 +62,18 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+             temperature=temperature,
+             sub_batch_size=sub_batch_size,
+             kd_loss_type=kd_loss_type,
++            filter_duplicate_positive_passages=filter_duplicate_positive_passages,
++            filter_group_duplicate_positive_passages=filter_group_duplicate_positive_passages,
+         )
+         self.sentence_pooling_method = sentence_pooling_method
+         self.normalize_embeddings = normalize_embeddings
+         self.cross_entropy = torch.nn.CrossEntropyLoss(reduction='mean')
+ 
+         self.unified_finetuning = unified_finetuning
++        self.sparse_loss_weight = sparse_loss_weight
++        self.colbert_loss_weight = colbert_loss_weight
++        self.sparse_self_distill_loss_weight = sparse_self_distill_loss_weight
++        self.colbert_self_distill_loss_weight = colbert_self_distill_loss_weight
+         if not self.unified_finetuning:
+             self.model = base_model['model']
+             self.colbert_linear = None
+@@ -273,6 +291,13 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+                 colbert_vecs = F.normalize(colbert_vecs, dim=-1)
+         return dense_vecs, sparse_vecs, colbert_vecs
+ 
++    def _cat_colbert_vecs(self, colbert_vecs_list):
++        max_length = max(colbert_vecs.size(1) for colbert_vecs in colbert_vecs_list)
++        return torch.cat([
++            F.pad(colbert_vecs, (0, 0, 0, max_length - colbert_vecs.size(1)), value=0)
++            for colbert_vecs in colbert_vecs_list
++        ], dim=0)
++
+     def encode(self, features):
+         """Encode and get the embedding.
+ 
+@@ -304,7 +329,7 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+                 dense_vecs = torch.cat(all_dense_vecs, 0)
+                 if self.unified_finetuning:
+                     sparse_vecs = torch.cat(all_sparse_vecs, 0)
+-                    colbert_vecs = torch.cat(all_colbert_vecs, 0)
++                    colbert_vecs = self._cat_colbert_vecs(all_colbert_vecs)
+             else:
+                 dense_vecs, sparse_vecs, colbert_vecs = self._encode(features)
+         else:
+@@ -318,7 +343,7 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+             dense_vecs = torch.cat(all_dense_vecs, 0)
+             if self.unified_finetuning:
+                 sparse_vecs = torch.cat(all_sparse_vecs, 0)
+-                colbert_vecs = torch.cat(all_colbert_vecs, 0)
++                colbert_vecs = self._cat_colbert_vecs(all_colbert_vecs)
+ 
+         if self.unified_finetuning:
+             return dense_vecs.contiguous(), sparse_vecs.contiguous(), colbert_vecs.contiguous()
+@@ -370,6 +395,9 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+         queries: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, 
+         passages: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None,
+         teacher_scores: Union[None, List[float]] = None,
++        group_ids: Union[None, List[Union[int, str]]] = None,
++        batch_positive_passages: Union[None, Dict[str, Tensor], List[Dict[str, Tensor]]] = None,
++        batch_positives_group_ids: Union[None, List[Union[int, str]]] = None,
+         no_in_batch_neg_flag: bool = False,
+     ):
+         """The computation performed at every call.
+@@ -378,6 +406,7 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+             queries (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): Input queries. Defaults to ``None``.
+             passages (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): Input passages. Defaults to ``None``.
+             teacher_scores (Union[None, List[float]], optional): Teacher scores for distillation. Defaults to ``None``.
++            group_ids (Union[None, List[Union[int, str]]], optional): Query group ids. Defaults to ``None``.
+             no_in_batch_neg_flag (bool, optional): If True, use no in-batch negatives and no cross-device negatives. Defaults to ``False``.
+ 
+         Returns:
+@@ -405,6 +434,10 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+             # dense loss
+             dense_scores, loss = compute_loss_func(
+                 q_dense_vecs, p_dense_vecs, teacher_targets=teacher_targets,
++                passages=passages,
++                group_ids=group_ids,
++                batch_positive_passages=batch_positive_passages,
++                batch_positives_group_ids=batch_positives_group_ids,
+                 compute_score_func=self.compute_dense_score
+             )
+ 
+@@ -418,12 +451,20 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+                 # sparse loss
+                 sparse_scores, sparse_loss = compute_loss_func(
+                     q_sparse_vecs, p_sparse_vecs, teacher_targets=teacher_targets,
++                    passages=passages,
++                    group_ids=group_ids,
++                    batch_positive_passages=batch_positive_passages,
++                    batch_positives_group_ids=batch_positives_group_ids,
+                     compute_score_func=self.compute_sparse_score
+                 )
+ 
+                 # colbert loss
+                 colbert_scores, colbert_loss = compute_loss_func(
+                     q_colbert_vecs, p_colbert_vecs, teacher_targets=teacher_targets,
++                    passages=passages,
++                    group_ids=group_ids,
++                    batch_positive_passages=batch_positive_passages,
++                    batch_positives_group_ids=batch_positives_group_ids,
+                     compute_score_func=self.compute_colbert_score,
+                     q_mask=self._get_queries_attention_mask(queries)
+                 )
+@@ -444,13 +485,17 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+                 # ensemble loss
+                 ensemble_scores, ensemble_loss = compute_loss_func(
+                     q_dense_vecs, p_dense_vecs, teacher_targets=teacher_targets,
++                    passages=passages,
++                    group_ids=group_ids,
++                    batch_positive_passages=batch_positive_passages,
++                    batch_positives_group_ids=batch_positives_group_ids,
+                     compute_score_func=self.ensemble_score,
+                     dense_scores=dense_scores,
+                     sparse_scores=sparse_scores,
+                     colbert_scores=colbert_scores
+                 )
+ 
+-                loss = (loss + ensemble_loss + 0.1 * sparse_loss + colbert_loss) / 4
++                loss = (loss + ensemble_loss + self.sparse_loss_weight * sparse_loss + self.colbert_loss_weight * colbert_loss) / 4
+ 
+                 if self.use_self_distill and self.step > self.self_distill_start_step:
+                     self_teacher_targets = torch.softmax(ensemble_scores.detach(), dim=-1)
+@@ -459,7 +504,11 @@ class EncoderOnlyEmbedderM3Model(AbsEmbedderModel):
+                     sparse_self_distill_loss = self.distill_loss("kl_div", self_teacher_targets, sparse_scores)
+                     colbert_self_distill_loss = self.distill_loss("kl_div", self_teacher_targets, colbert_scores)
+ 
+-                    loss += (dense_self_distill_loss + 0.1 * sparse_self_distill_loss + colbert_self_distill_loss) / 3
++                    loss += (
++                        dense_self_distill_loss
++                        + self.sparse_self_distill_loss_weight * sparse_self_distill_loss
++                        + self.colbert_self_distill_loss_weight * colbert_self_distill_loss
++                    ) / 3
+                     loss = loss / 2
+             self.step += 1
+         else:
+diff --git a/FlagEmbedding/finetune/embedder/encoder_only/m3/runner.py b/FlagEmbedding/finetune/embedder/encoder_only/m3/runner.py
+index bd3de30..831c0af 100644
+--- a/FlagEmbedding/finetune/embedder/encoder_only/m3/runner.py
++++ b/FlagEmbedding/finetune/embedder/encoder_only/m3/runner.py
+@@ -130,9 +130,15 @@ class EncoderOnlyEmbedderM3Runner(AbsEmbedderRunner):
+             kd_loss_type=self.training_args.kd_loss_type,
+             sentence_pooling_method=self.training_args.sentence_pooling_method,
+             normalize_embeddings=self.training_args.normalize_embeddings,
++            filter_duplicate_positive_passages=self.training_args.filter_duplicate_positive_passages,
++            filter_group_duplicate_positive_passages=self.training_args.filter_group_duplicate_positive_passages,
+             unified_finetuning=self.training_args.unified_finetuning,
+             use_self_distill=self.training_args.use_self_distill,
+-            self_distill_start_step=self.training_args.self_distill_start_step
++            self_distill_start_step=self.training_args.self_distill_start_step,
++            sparse_loss_weight=self.training_args.sparse_loss_weight,
++            colbert_loss_weight=self.training_args.colbert_loss_weight,
++            sparse_self_distill_loss_weight=self.training_args.sparse_self_distill_loss_weight,
++            colbert_self_distill_loss_weight=self.training_args.colbert_self_distill_loss_weight
+         )
+ 
+         if self.training_args.gradient_checkpointing:

@@ -6,7 +6,8 @@ This folder documents fine-tuning `BAAI/bge-m3` with `FlagEmbedding`.
 
 - Upstream reference shell script: `FlagEmbedding/examples/finetune/embedder/encoder_only/m3.sh`
 - Pinned `FlagEmbedding` commit: `dbc600560b2dadcc1514989092f7b849673bb67d`
-- No knowledge distillation
+- No external knowledge distillation via `pos_scores`/`neg_scores`
+- Self-distillation from the M3 ensemble score
 - No query or passage instruction prefixes
 - `cls` pooling for the dense embedding path
 - `unified_finetuning=True`
@@ -21,7 +22,7 @@ Run:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install dotenv transformers torch torchvision matplotlib modal cycler
+pip install dotenv "transformers==4.57.6" torch torchvision matplotlib modal cycler fastembed llama-index-core qdrant_client datasets peft
 ```
 
 These local packages are needed for the data-preparation scripts.
@@ -32,11 +33,12 @@ When you open a new terminal, reactivate the environment with:
 source .venv/bin/activate
 ```
 
-### 2. Set fine-tuning state
+### 2. Set fine-tuning data mode
 
-In `config/m3.py`, set: `IS_FINETUNED = False`
+- In `config/eval.py`, set: `TO_FINE_TUNE = True`
+- In `config/m3.py`, set: `USE_FINETUNED_M3 = False`
 
-This keeps things in the pre-fine-tune phase:
+This uses the train split for creating the fine-tuning data while keeping the base encoder active:
 
 - `config/eval.py` uses the `train` split
 - RRF uses `bge_m3`
@@ -52,7 +54,7 @@ Run:
 
 ### 4. Prepare the cleaned email dataset
 
-Run:
+Run (setting `THREAD_GROUPING_STRATEGY = "decoder_based"` in `config/data.py`):
 
 ```bash
 python data/prepare_dataset.py
@@ -60,8 +62,17 @@ python data/prepare_dataset.py
 
 This writes:
 
-- `data/email_messages/messages_with_threads.csv`
-- `data/knowledge_base_messages/messages_for_knowledge_base.jsonl`
+- `data/knowledge_base/knowledge_base.json`
+- `data/threads/decoder_based/threads.json`
+- `data/threads/decoder_based/threads_by_size.json`
+- `data/discarded_threads/decoder_based/discarded_internal_threads.json` if `REMOVE_INTERNAL_UPM_MESSAGES = True`
+- `data/threads/decoder_based/author_distribution.png`
+- `data/threads/decoder_based/folder_uri_distribution.png`
+- `data/threads/decoder_based/folder_uri_drop_3d_without_templates.png`
+- `data/threads/decoder_based/folder_uri_drop_3d.png`
+- `data/threads/decoder_based/thread_size_distribution.png`
+- `data/threads/decoder_based/thread_grouping_pre_decoder_statistics.png`
+- `data/threads/decoder_based/thread_grouping_post_decoder_statistics.png`
 
 ### 5. Split the dataset
 
@@ -77,7 +88,7 @@ This writes:
 - `data/split_datasets/dev.json`
 - `data/split_datasets/test.json`
 
-### 6. Curate train-split grouped email threads for the knowledge base
+### 6. Curate train-split grouped email threads for the knowledge base and encode them
 
 Run:
 
@@ -85,51 +96,50 @@ Run:
 python data/curate_email_knowledge_base.py
 ```
 
-This writes:
+This writes local plots:
 
-- `data/knowledge_base_messages/email_thread_candidates.json`
-- `data/knowledge_base_messages/email_lm_abstract_chunks.jsonl`
-- `data/knowledge_base_messages/email_lm_summary_chunks.jsonl`
-- `data/knowledge_base_messages/email_lm_cleaned_text_chunks.jsonl`
-- `data/knowledge_base_messages/email_lm_q_and_a_chunks.jsonl`
+- `data/knowledge_base/email_knowledge_base_pre_curator_statistics.png`
+- `data/knowledge_base/email_knowledge_base_post_curator_statistics.png`
 
-### 7. Encode the curated email knowledge base
+This writes JSONL/TXT artifacts into the Modal volume under:
 
-Run:
+- `email_lm_abstract_chunks` (stored, not encoded)
+- `email_lm_summary_chunks`
+- `email_lm_cleaned_text_chunks`
+- `email_lm_q_and_a_chunks`
+- `email_lm_summary_subchunks`
+- `email_lm_cleaned_text_subchunks`
+- `email_lm_q_and_a_valid_chunks`
+- `email_lm_q_and_a_for_q_only_valid_chunks`
 
-```bash
-python data/encode_email_knowledge_base.py
-```
-
-This encodes the curated email knowledge-base artifacts into their own Qdrant collections:
+This also encodes and writes the email knowledge-base collections into Qdrant:
 
 - `email_lm_summary_chunks`
 - `email_lm_cleaned_text_chunks`
 - `email_lm_q_and_a_chunks`
+- `email_lm_q_and_a_for_q_only_chunks`
 
-### 8. Run the crawler agent so the collections are populated and encoded
+### 7. Run the crawler agent so the crawl-based collections are populated and encoded
 
-Run:
+Run (setting `RUN_ENCODING = True` in `config/crawler_agent.py`):
 
 ```bash
 modal run services/crawler_agent.py::run_crawler_agent
 ```
 
-This step is needed before dumping collection payloads locally for the oracle discriminator workflow.
+This creates:
 
-### 9. Dump the collection payloads used by the oracle discriminator
+- `raw_chunks`
+- `manually_cleaned_chunks`
+- `lm_cleaned_text_chunks`
+- `lm_abstract_chunks` (unused)
+- `lm_summary_chunks`
+- `lm_q_and_a_chunks`
+- `lm_q_and_a_for_q_only_chunks`
 
-Run:
+This step is needed before retrieval evaluation can query the crawl-based collections.
 
-```bash
-modal run eval/run_dump_collection_payloads.py --collection-names '["lm_summary_chunks"]'
-```
-
-This writes dumped collection payloads under:
-
-- `eval/results/run_dump_collection_payloads/<timestamp>/lm_summary_chunks/dump.json`
-
-### 10. Generate the query rewrite cache
+### 8. Generate retrieval outputs
 
 Run:
 
@@ -137,19 +147,32 @@ Run:
 modal run eval/run_data_variant_eval.py
 ```
 
-This step is required because `eval/run_oracle_discriminator.py` reads the reranker queries from the query rewrite cache written by `run_data_variant_eval.py`, and because `data/prepare_m3_finetune_dataset.py` later reads the retrieval outputs written here (currently the `rrf` outputs) to build the fine-tuning queries and mine encoder-side negatives.
+This generates the retrieved chunks later used by the oracle discriminator and by M3 fine-tuning negative selection.
 
-This writes query rewriting cache files (to obtain diverse and anonymized queries) under:
+In `config/eval.py`, use:
 
-- `eval/cache/query_rewrites/`
+- `DATA_VARIANT_EVAL_SOURCES = ["web", "email"]`
+- `COMMON_EVAL_ENCODERS` with `bm25`, `splade`, `bge_m3`, `qwen3_embedding_0_6b`, and `jina_v5_text_small`
+- `DATA_VARIANT_TEST_EVAL_VARIANTS = {"lm_cleaned_text_chunks": {"encoders": COMMON_EVAL_ENCODERS}}`
 
-And writes retrieval outputs (to mine hard-negatives from the encoders) under:
+This writes retrieval outputs under:
 
 - `eval/results/run_data_variant_eval/<split>/<timestamp>/<data_variant>/`
 
-### 11. Run the oracle discriminator
+It also creates or reuses the shared query rewrite cache under:
 
-Run:
+- `eval/cache/query_rewrites/`
+
+For M3 fine-tuning, later steps use the `reranker`, `bge_m3_dense`, and `bge_m3_sparse` outputs from this run.
+
+### 9. Run the oracle discriminator
+
+Run this separately for each source by setting `ORACLE_DISCRIMINATOR_DATA_SOURCES` in `config/llm_judge.py` to `["web"]` and then to `["email"]`. In `config/llm_judge.py`, also use:
+
+- `ORACLE_DISCRIMINATOR_INPUT_MODE = "retrieval"`
+- `ORACLE_DISCRIMINATOR_RETRIEVAL_OUTPUT_FILE_NAMES = ["reranker", "bge_m3_sparse", "bge_m3_dense"]`
+
+For each source, run:
 
 ```bash
 modal run eval/run_oracle_discriminator.py
@@ -157,11 +180,15 @@ modal run eval/run_oracle_discriminator.py
 
 This writes results (to mine positives from the oracle's `supporting_chunks` and negatives from the oracle's `insufficient_chunks`) under:
 
-- `eval/results/run_oracle_discriminator/<split>/<timestamp>/lm_summary_chunks/oracle_discriminator.json`
+- `eval/results/run_oracle_discriminator/<split>/<timestamp>/lm_cleaned_text_chunks/oracle_discriminator.json`
 
-### 12. Build the final M3 training files from the oracle and retrieval results
+### 10. Build the final M3 training files from the oracle and retrieval results
 
-Run (with `M3_FINETUNE_ORACLE_DISCRIMINATOR_SPLIT = "train"` in `config/data.py`):
+Run after setting the oracle and retrieval timestamps in `config/fine_tune.py`:
+
+- `M3_FINETUNE_ORACLE_DISCRIMINATOR_SPLIT = "train"`
+- `M3_FINETUNE_ORACLE_DISCRIMINATOR_SOURCE_TO_TIMESTAMP`
+- `M3_FINETUNE_RETRIEVAL_TIMESTAMP`
 
 ```bash
 python data/prepare_m3_finetune_dataset.py
@@ -178,7 +205,7 @@ Training examples are stored in this format:
 {"query":"...", "pos":["another positive passage 1", "another positive passage 2"], "neg":["another negative passage 1", "another negative passage 2"]}
 ```
 
-### 13. Update `finetune/sft.sh` with the maximum query and passage sequence lengths
+### 11. Update `finetune/sft.sh` with the maximum query and passage sequence lengths
 
 Run:
 
@@ -314,15 +341,27 @@ From the root project directory locally, run:
 scp -P <PORT> -i ~/.ssh/<PRIVATE_KEY_FILE> -r \
     data/finetune/<TIMESTAMP>/train.jsonl \
     finetune/sft.sh \
+    finetune/flagembedding_m3_finetune_training.patch \
     root@<IP>:/workspace/finetune/
 ```
+
+### Apply the FlagEmbedding patch
+
+Run:
+
+```bash
+cd /workspace/FlagEmbedding
+patch -p1 < /workspace/finetune/flagembedding_m3_finetune_training.patch
+```
+
+using `git reset --hard dbc600560b2dadcc1514989092f7b849673bb67d` if needed (to reset before applying a new patch)
 
 ### Go back to the SSH session and run the fine-tuning script
 
 Run:
 
 ```bash
-cd finetune
+cd ../finetune
 chmod +x sft.sh
 ./sft.sh
 ```
@@ -331,7 +370,9 @@ chmod +x sft.sh
 
 ### 1. Set fine-tuning state
 
-In `config/m3.py`, set: `IS_FINETUNED = True`
+- In `config/m3.py`, set: `HAS_FINETUNED_M3 = True`
+- In `config/m3.py`, set: `USE_FINETUNED_M3 = True`
+- In `config/eval.py`, set: `TO_FINE_TUNE = False`
 
 This switches:
 
@@ -339,6 +380,7 @@ This switches:
 - RRF swaps `bge_m3` for `bge_m3_muia`
 - Eval runs `bge_m3` and `bge_m3_muia`
 - `config/crawler_agent.py` adds `bge_m3_muia` to the encode variants
+- Qdrant access uses the `_post_sft` collections
 
 ### 2. Redeploy the Modal services
 
@@ -350,20 +392,15 @@ Run:
 
 This makes the encoder service aware of the fine-tuned encoder entry in `config/encoder.py`.
 
-### 3. Re-encode the existing crawl with the fine-tuned encoder
+### 3. Create the post-SFT Qdrant collections with the fine-tuned vectors
 
 Run:
 
 ```bash
-modal run services/crawler_agent.py::run_crawler_agent
+modal run finetune/update_qdrant_m3_muia_vectors.py
 ```
 
-Keep:
-
-- `REUSE_CRAWL = True`
-- the same `REUSE_TIMESTAMP`
-
-This reuses the same chunk files and rebuilds vectors.
+This creates the `_post_sft` collections from the existing collections and adds the `bge_m3_muia` dense and sparse vectors.
 
 ### 4. Re-run the retrieval evaluation
 

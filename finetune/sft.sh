@@ -1,10 +1,10 @@
 #!/bin/bash
 
 export WANDB_MODE=disabled
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 
 push_to_hub=true
 negatives_cross_device=false
-gradient_checkpointing=false
 
 master_addr="127.0.0.1"
 master_port=$(shuf -i 20000-29999 -n 1)
@@ -37,12 +37,6 @@ else
     negatives_cross_device_arg=""
 fi
 
-if [ "$gradient_checkpointing" = true ]; then
-    gradient_checkpointing_arg="--gradient_checkpointing"
-else
-    gradient_checkpointing_arg=""
-fi
-
 model_args="\
     --model_name_or_path $model_name_or_path \
     --cache_dir $HF_HUB_CACHE \
@@ -52,8 +46,8 @@ data_args="\
     --train_data $train_data \
     --cache_path $cache_path \
     --train_group_size 8 \
-    --query_max_len 73 \
-    --passage_max_len 666 \
+    --query_max_len 120 \
+    --passage_max_len 1953 \
     --pad_to_multiple_of 8 \
     --knowledge_distillation False \
 "
@@ -63,21 +57,28 @@ training_args="\
     --overwrite_output_dir \
     --learning_rate 1e-5 \
     --bf16 \
-    --num_train_epochs 5 \
-    --per_device_train_batch_size 2 \
-    --sub_batch_size -1 \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 4 \
+    --sub_batch_size 4 \
+    --gradient_checkpointing True \
     --dataloader_drop_last True \
+    --lr_scheduler_type linear \
     --warmup_ratio 0.1 \
-    $gradient_checkpointing_arg \
-    --logging_steps 2 \
+    --logging_steps 25 \
     --save_steps 100 \
     --save_total_limit 1 \
     $negatives_cross_device_arg \
     --temperature 0.02 \
     --sentence_pooling_method cls \
     --normalize_embeddings True \
+    --filter_duplicate_positive_passages False \
+    --filter_group_duplicate_positive_passages False \
+    --sparse_loss_weight 0.1 \
+    --colbert_loss_weight 1.0 \
+    --sparse_self_distill_loss_weight 0.1 \
+    --colbert_self_distill_loss_weight 1.0 \
     --unified_finetuning True \
-    --use_self_distill False \
+    --use_self_distill True \
     --fix_encoder False \
     $push_to_hub_args \
 "
