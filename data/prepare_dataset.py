@@ -19,13 +19,13 @@ from config.data import (
     UPM_DOMAINS,
     THREAD_GROUPER_MAX_EMAILS,
     THREAD_GROUPER_MAX_RULE_BASED_THREADS,
+    N_CONTEXT_EMAILS,
 )
 from config.decoder import (
     MAX_CONCURRENT_BATCHES,
     MODEL_PROFILES,
     THREAD_GROUPER_PROFILE,
 )
-from config.email_agent import N_CONTEXT_EMAILS_PER_FOLDER
 from helpers.email_agent import transform_env_csv_into_list
 from helpers.data import (
     normalize_subject,
@@ -314,7 +314,7 @@ def main():
         print("Step 7: grouping emails by thread")
         print("="*50)
 
-        n_dataset_thread_lookback_window_rows = 2 * N_CONTEXT_EMAILS_PER_FOLDER
+        n_dataset_thread_lookback_window_rows = N_CONTEXT_EMAILS
         print(f"\nLookback window rows: {n_dataset_thread_lookback_window_rows}")
         threads = assign_thread_ids_by_subject_and_participant_overlap_for_dataset(
             dedup_filtered_rows,
