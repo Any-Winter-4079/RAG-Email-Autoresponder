@@ -1,6 +1,6 @@
 import modal
 from config.general import VOLUME_PATH
-from config.m3 import IS_FINETUNED
+from config.m3 import HAS_FINETUNED_M3
 
 START_URL = "https://muia.dia.fi.upm.es/es/"
 MAX_DEPTH = 3
@@ -175,6 +175,8 @@ REUSE_TIMESTAMP = "20260311_055008" # reuse this within the same year if REUSE_C
 RECREATE_QDRANT_COLLECTIONS = True
 
 WRITE_POINTS_BATCH_SIZE = 1024
+LATE_WRITE_POINTS_BATCH_SIZE = 16
+MULTI_KIND_EMBEDDINGS_WITH_LATE_WRITE_POINTS_BATCH_SIZE = 1
 
 FILE_START = "crawl_"
 RAW_PATH = f"{VOLUME_PATH}/raw"
@@ -195,7 +197,7 @@ LM_Q_AND_A_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_valid_chunks"
 LM_Q_AND_A_FOR_Q_ONLY_VALID_CHUNKS_PATH = f"{VOLUME_PATH}/lm_q_and_a_for_q_only_valid_chunks"
 
 M3_ENCODE_ENCODERS = {"bge_m3": {"batch_size": 256}}
-if IS_FINETUNED:
+if HAS_FINETUNED_M3:
     M3_ENCODE_ENCODERS["bge_m3_muia"] = {"batch_size": 256}
 
 ENCODE_VARIANTS = {
@@ -204,7 +206,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-            "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},
@@ -217,7 +219,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-             "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},
@@ -230,7 +232,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-             "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},
@@ -243,7 +245,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-             "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},
@@ -256,7 +258,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-             "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},
@@ -269,7 +271,7 @@ ENCODE_VARIANTS = {
             "bm25": {"batch_size": 1024},
             "splade": {"batch_size": 1024},
             # "colbert": {"batch_size": 1024},
-             "bge_small": {"batch_size": 1024},
+            # "bge_small": {"batch_size": 1024},
             # "bge_large": {"batch_size": 1024},
             **M3_ENCODE_ENCODERS,
             "qwen3_embedding_0_6b": {"batch_size": 32},

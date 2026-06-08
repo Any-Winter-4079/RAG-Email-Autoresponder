@@ -2,6 +2,8 @@ SCALEDOWN_WINDOW = 60 # seconds
 MODAL_TIMEOUT = 3600 # seconds
 MIN_CONTAINERS = 0 # 0 to make sure we don't pay 24/7
 COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT = 600 # seconds
+COLLECTION_OPTIMIZATION_POLL_INTERVAL = 30 # seconds
+COLLECTION_OPTIMIZATION_WAIT_TIMEOUT = 3600 # seconds
 
 COLLECTION_HNSW_CONFIG = {
     # https://qdrant.tech/documentation/manage-data/indexing/
@@ -21,4 +23,15 @@ COLLECTION_HNSW_CONFIG = {
     # https://qdrant.tech/documentation/ops-configuration/configuration/
     # Store HNSW index on disk. If set to false, index will be stored in RAM. Default: false
     "on_disk": False,
+}
+
+COLLECTION_INGESTION_HNSW_CONFIG = {
+    **COLLECTION_HNSW_CONFIG,
+    # disable HNSW edge construction during bulk writes
+    "m": 0,
+}
+
+COLLECTION_INGESTION_OPTIMIZERS_CONFIG = {
+    # disable background segment optimization during bulk writes and persistence
+    "max_optimization_threads": 0,
 }

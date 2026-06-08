@@ -18,9 +18,10 @@ QDRANT_VOLUME_STORAGE_PATH = f"{VOLUME_PATH}/qdrant_server_storage"
 
 SCALEDOWN_WINDOW = 900 # seconds
 MODAL_TIMEOUT = 3600 # seconds
-MIN_CONTAINERS = 0
+MIN_CONTAINERS = 1
 MAX_CONTAINERS = 1
 MAX_INPUTS = 100
+NONPREEMPTIBLE = True
 
 image = (
     modal.Image.debian_slim(python_version=PYTHON_VERSION)

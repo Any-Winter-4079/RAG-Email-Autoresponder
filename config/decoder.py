@@ -58,6 +58,8 @@ NO_USEFUL_INFORMATION_OPENING_TAG = "<nousefulinformation>"
 NO_USEFUL_INFORMATION_CLOSING_TAG = "</nousefulinformation>"
 RERANKER_QUERY_OPENING_TAG = "<rerankerquery>"
 RERANKER_QUERY_CLOSING_TAG = "</rerankerquery>"
+ANONYMIZED_REQUEST_OPENING_TAG = "<anonymizedrequest>"
+ANONYMIZED_REQUEST_CLOSING_TAG = "</anonymizedrequest>"
 QUERY_TYPE_TO_N_MAX_QUERIES = {
     "keyword": 8,
     "natural": 8,
@@ -221,21 +223,22 @@ GEMMA4_26B_A4B_IT_MODEL_SETTINGS = {
     **GEMMA4_DEFAULT_SAMPLING,
 }
 EMAIL_WRITER_SETTINGS = {
+    "provider": "local",
     "decoder_app_name": DECODER_LEGACY_APP_NAME,
     "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
-    "provider": "local",
     **QWEN3_8B_FP8_MODEL_SETTINGS,
     "enable_thinking": True,
     "is_vision_model": False,
-    "max_context_tokens": 32_768,
+    "max_input_tokens": 20_000,
+    "max_new_tokens": 8_192,
     "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
     "return_prompt_text": True,
 }
 THREAD_GROUPER_SETTINGS = {
     "provider": "local",
-    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
     "decoder_app_name": DECODER_LATEST_APP_NAME,
     "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
+    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
     "enable_thinking": False,
     "is_vision_model": False,
     # Approximate Gemma 4 26B A4B IT memory budget in bf16:
@@ -252,27 +255,28 @@ THREAD_GROUPER_SETTINGS = {
     #   24 GiB / 225_280 ~= 114_390 tokens
     "max_input_tokens": 32_768,
     "max_new_tokens": 32_768,
-    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "use_flash_attention_2": False,
     "return_prompt_text": True,
 }
 QUERY_REWRITER_SETTINGS = {
-    "decoder_app_name": DECODER_LEGACY_APP_NAME,
-    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
     "provider": "local",
-    **QWEN3_8B_FP8_MODEL_SETTINGS,
-    "enable_thinking": True,
+    "decoder_app_name": DECODER_LATEST_APP_NAME,
+    "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
+    **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
+    "temperature": QUERY_REWRITER_TEMPERATURE,
+    "enable_thinking": False,
     "is_vision_model": False,
     "max_new_tokens": 8_192,
-    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "use_flash_attention_2": False,
     "return_prompt_text": False,
 }
 
 DATA_CLEANER_PROVIDER = "local"
 DATA_CLEANER_PROVIDER_TO_SETTINGS = {
     "local": {
+        "provider": "local",
         "decoder_app_name": DECODER_LEGACY_APP_NAME,
         "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
-        "provider": "local",
         **QWEN3_8B_FP8_MODEL_SETTINGS,
         "enable_thinking": True,
         "is_vision_model": False,
@@ -303,24 +307,24 @@ DATA_CLEANER_PROVIDER_TO_SETTINGS = {
 DATA_CLEANER_SETTINGS = DATA_CLEANER_PROVIDER_TO_SETTINGS[DATA_CLEANER_PROVIDER]
 
 EMAIL_KNOWLEDGE_BASE_CURATOR_SETTINGS = {
+    "provider": "local",
     "decoder_app_name": DECODER_LATEST_APP_NAME,
     "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LATEST_FUNCTION_NAME,
-    "provider": "local",
     **GEMMA4_26B_A4B_IT_MODEL_SETTINGS,
     "enable_thinking": False,
     "is_vision_model": False,
     "max_input_tokens": 24_576,
     "max_new_tokens": 40_960,
-    "use_flash_attention_2": USE_FLASH_ATTENTION_IMAGE,
+    "use_flash_attention_2": False,
     "return_prompt_text": True,
 }
 
 LLM_JUDGE_PROVIDER = "openai"
 LLM_JUDGE_PROVIDER_TO_SETTINGS = {
     "local": {
+        "provider": "local",
         "decoder_app_name": DECODER_LEGACY_APP_NAME,
         "decoder_function_name": RUN_LOCAL_LM_OR_VLM_LEGACY_FUNCTION_NAME,
-        "provider": "local",
         **QWEN3_8B_FP8_MODEL_SETTINGS,
         "enable_thinking": True,
         "is_vision_model": False,
@@ -769,7 +773,10 @@ MODEL_PROFILES = {
             "7. If quoted or forwarded text is needed to understand institutional information, keep only the minimum necessary information and rewrite it in clean reusable form.\n"
             "8. Do not invent policy, deadlines, requirements, or explanations that are not supported by the thread.\n"
             f"9. If a thread contains only a request, only an acknowledgement, or discussion without reusable institutional information, output only {NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG} inside that thread.\n"
-            "10. A student-side inquiry does not become reusable knowledge just because it mentions admissions rules, website wording, scoring criteria, document names, or other institutional topics. Unless the thread contains a substantive institutional answer or an institutional outbound message with reusable content, do not treat the student's question, speculation, or interpretation as knowledge.\n\n"
+            "10. A student-side inquiry does not become reusable knowledge just because it mentions admissions rules, website wording, scoring criteria, document names, or other institutional topics. Unless the thread contains a substantive institutional answer or an institutional outbound message with reusable content, do not treat the student's question, speculation, or interpretation as knowledge.\n"
+            "11. An institutional answer can be reusable even when it does not directly solve the sender's problem. If the official answer says where to go, who to contact, which office is responsible, what document the sender should draft, or what next action is needed, preserve that as useful institutional knowledge. This knowledge base is for helping the director answer future emails, so learning when to defer a question to another office, school direction, professor, tutor, administrative channel, or responsible person is useful. Do not output no-useful-information merely because the institutional reply is short or because the solution is a referral, delegation, or procedural next step.\n"
+            "12. When the reusable content is an implicit procedure, generalize it carefully. For example, if a student asks for an official letter for a residence renewal and the institutional answer asks the student to draft the document so the coordinator can review and sign it, preserve the general procedure: for this kind of official certificate or letter, the student may be asked to prepare a draft and send it for review and signature. If someone asks about organizing an event and the institutional answer says to speak with the School direction, preserve the general referral: event organization requests should be directed to the School direction. Keep the scope supported by the thread and do not overgeneralize beyond it.\n\n"
+            "13. Be especially careful not to discard short institutional answers in these recurring areas: admission status and denial reasons; reclamations or appeals; enrollment, cancellation, and administrative documentation; HELIOS or pre-registration platform issues; extracurricular internships; TFM title, defense, grades, confidentiality, library, and secretary workflows; seminar selection, seminar modality, seminar schedules, and seminar grades; official letters or certificates; and event organization. These threads often contain useful routing, responsibility, or next-step knowledge even when they do not contain a full policy explanation.\n\n"
             "### OUTPUT-SPECIFIC INSTRUCTIONS:\n"
             f"1. **Cleaned Text**: For each useful thread, produce a cleaned version inside {CLEANED_TEXT_OPENING_TAG} tags. This is a cleanup output, not a summary and not a rewrite. Keep all remaining substantive institutional content, preserve the original facts, wording, structure, and chronological flow as much as possible, translate to English, anonymize when needed, and remove only noise such as greetings, signatures, repeated acknowledgements, and duplicated quoted text. Do not preserve external personal names or identity-bearing details just because they appear in the original email. When a sentence is otherwise useful, keep the sentence and replace only the sensitive span with square-bracket placeholders such as [REDACTED NAME], [REDACTED EMAIL], [REDACTED PHONE], or [REDACTED ID] instead of rewriting the sentence into third person. Do not rewrite the thread as a third-person explanation such as 'a student is asking' or 'the issue is that'. If a direct question or request is part of the reusable content, keep that question or request in cleaned form instead of replacing it with a narrated paraphrase. This output is for cleanup, not relevance filtering: keep all remaining content and do not drop content based on relevance.\n"
             f"2. **Abstract**: For each useful thread, produce a concise 1-sentence overview inside {ABSTRACT_OPENING_TAG} tags.\n"
@@ -778,6 +785,18 @@ MODEL_PROFILES = {
             "5. Prefer broad retrieval coverage when the thread supports it: include multiple plausible user phrasings and intents, such as direct factual questions, procedural questions, decision-oriented questions, consequence questions, and alternative formulations that might retrieve the same knowledge from different angles.\n"
             "6. If the thread contains little reusable knowledge, generate fewer Q&A pairs rather than inventing weak ones. Do not generate awkward, source-bound, or low-value questions that merely restate one email exchange in a contrived way. Avoid questions like 'what should a student do if...' when the real reusable knowledge is a direct rule or requirement that can be asked more naturally and generally. If a candidate question feels tied to one specific message, one student's record, one student's discrepancy, or one one-off administrative case instead of a reusable user need for other students, drop it.\n"
             f"7. If a thread does not contain reusable institutional knowledge, output only {NO_USEFUL_INFORMATION_OPENING_TAG}{NO_USEFUL_INFORMATION_CLOSING_TAG} inside that thread.\n\n"
+            "### REUSABLE OFFICIAL-RESPONSE PATTERN EXAMPLES:\n"
+            "These are illustrative examples, not facts to copy. If a real thread differs from an example, follow the real official response, not the example. Use the request as short anonymized context from the student point of view. Use the official response to decide whether the thread contains reusable MUIA-side behavior. In the generated outputs, keep the concrete request details needed for retrieval, but generalize only from categories, owners, conditions, and routes that the official response itself supports. Do not invent a broader rule from the request alone.\n"
+            "When the official response depends on an offline decision that a future email-writing model would not know, keep it only if the response gives a reusable condition, responsible owner, or standard path. Otherwise, output no-useful-information. Do not encode that MUIA already did an action unless the thread states it as reusable knowledge; if the useful behavior is a future director action, preserve it as a draft action for director review.\n"
+            "- Request: 'Can I get an official letter for my residence renewal?' Official response: 'Prepare a draft that may work for you and send it to me so I can review and sign it.' How to proceed: keep this as useful. The reusable MUIA-side procedure is that, for official letters or certificates needing coordinator review or signature, the requester may prepare a draft and send it to MUIA for review/signature. The generated variants should still mention the concrete document type from the thread so retrieval can match similar future requests.\n"
+            "- Request: 'I have a problem with missing pre-registration documents.' Official response: 'These are administrative questions; ask the official master's processing address.' How to proceed: keep this as useful. The official response groups the concrete issue as administrative and gives the route. The generated variants should preserve both the specific issue, such as missing documents or pre-registration, and the broader MUIA-side routing: administrative questions go through the official processing channel named in the response.\n"
+            "- Request: 'I want to submit an admission reclamation.' Official response: 'State explicitly the reasons for the reclamation; sufficiently argued claims will be routed to the relevant section.' How to proceed: keep this as useful. The reusable MUIA-side behavior is that MUIA may require explicit reasons, documents, or other supporting information before processing or routing a request. The generated variants should preserve the concrete request type and the exact information required by the official response.\n"
+            "- Request: 'Can MUIA help host an event related to data or programming?' Official response: 'You need to speak with the School direction.' How to proceed: keep this as useful. The official response identifies an institutional owner outside the coordinator's scope. The generated variants should preserve the concrete event-support request for retrieval while also preserving the MUIA-side route to the School direction.\n"
+            "- Request: 'Where should I send my completed TFM confidentiality document?' Official response: 'Send the completed document to Biblioteca, with the coordinator in copy.' How to proceed: keep this as useful. The official response gives a document-routing procedure. The generated variants should preserve the document type, the destination, the requirement that it be completed, and the copy condition.\n"
+            "- Request: 'Can my application be evaluated before I close pre-registration?' Official response: 'If the pre-registration is not closed, it cannot be evaluated.' How to proceed: keep this as useful. The official response gives a prerequisite and a negative constraint. The generated variants should preserve the concrete process and the condition that must be satisfied before evaluation.\n"
+            "- Request: 'Can the coordinator approve extracurricular internships?' Official response: 'The coordinator does not manage internships; OREX handles them.' How to proceed: keep this as useful. The official response gives a scope boundary and a responsible owner. The generated variants should preserve that internships are outside the coordinator's scope and that OREX is the route named in the response.\n"
+            "- Request: 'I want to cancel my enrollment.' Official response: 'I will forward the cancellation request to the secretary of the School.' How to proceed: keep this only if the official response is from MUIA and says MUIA will forward the request. The generated variants should preserve the concrete cancellation request and the named destination, but they must not claim that an automatic system has already forwarded anything.\n"
+            "- Do not mark these response patterns as no-useful-information when they provide reusable behavior: drafting for signature, deferring, forwarding by the director, ownership boundaries, administrative channels, prerequisites, negative constraints, required supporting information, document routing, or responsible offices.\n\n"
             "### EXAMPLE:\n"
             "**Input Email Threads**:\n"
             f"{THREAD_OPENING_TAG}\n"
@@ -913,7 +932,7 @@ MODEL_PROFILES = {
             "You are an expert at generating retrieval queries."
         ),
         "prompt_template": (
-            f"Your task is to do one of two things for the following email: either generate retrieval queries and one reranker query, or, if the latest email does not contain a real current request, output only {NO_REQUEST_OPENING_TAG}{NO_REQUEST_CLOSING_TAG}.\n"
+            f"Your task is to do one of two things for the following email: either generate retrieval queries, one reranker query, and one anonymized request, or, if the latest email does not contain a real current request, output only {NO_REQUEST_OPENING_TAG}{NO_REQUEST_CLOSING_TAG}.\n"
             "When you do generate queries, the goal is to maximize the chances of retrieving similar and useful chunks from a knowledge base.\n\n"
             "### KNOWLEDGE BASE CONTEXT:\n"
             "You are part of a system that is meant to answer emails for the Master Universitario en Inteligencia Artificial (MUIA). The knowledge base was built by starting from webpages about that master's program and then following links into the Department of Artificial Intelligence, Escuela Técnica Superior de Ingenieros Informáticos (the school that hosts the program), and Universidad Politecnica de Madrid. "
@@ -933,7 +952,7 @@ MODEL_PROFILES = {
             "- If the latest email only acknowledges receipt, says thank you, confirms understanding, sends a file that was already requested, closes the thread, or contains generic politeness with no current request, treat it as no-request.\n"
             "- If quoted or forwarded history contains an older request but the latest unquoted message no longer asks for anything, treat it as no-request.\n"
             "- Do not manufacture a request from the subject line when the latest body does not ask for information, clarification, or action.\n"
-            "- If you decide the email is no-request, stop there and do not generate queries or a reranker query.\n\n"
+            "- If you decide the email is no-request, stop there and do not generate queries, a reranker query, or an anonymized request.\n\n"
             "### RETRIEVAL CONTEXT AND RULES:\n"
             "The following retrieval rules apply only when the latest email does contain a real current request and you are generating queries rather than outputting no-request.\n"
             "Retrieval uses several encoders, including sparse frequency-based encoders and dense encoders. Long emails often contain many words that are not useful for retrieval. "
@@ -978,11 +997,15 @@ MODEL_PROFILES = {
             f"- Also output exactly one reranker query inside {RERANKER_QUERY_OPENING_TAG} and {RERANKER_QUERY_CLOSING_TAG} tags.\n"
             "- The reranker query should be a single clean rewrite of the current request in the email. It should read like a direct request or concise email-style summary of what is currently being asked, not like a keyword list and not like a label such as 'Current request: ...'.\n"
             "- For the reranker query, remove greetings, signatures, and stale quoted or forwarded material when they are not needed, but keep the background information that is necessary to understand the current request.\n"
+            f"- Also output exactly one anonymized request inside {ANONYMIZED_REQUEST_OPENING_TAG} and {ANONYMIZED_REQUEST_CLOSING_TAG} tags. This is used by an oracle discriminator and human review, not as the compact reranker query.\n"
+            "- The anonymized request may be longer than the reranker query. Preserve the details that could affect answerability: degree type, previous university, country, work situation, academic year or deadline when relevant, modality, subject or seminar names, grades, credits, language level, external institution, and the concrete action or information requested.\n"
+            "- In the anonymized request, remove or replace private identifiers: student or applicant names, student IDs, national IDs, passport or NIE numbers, phone numbers, email addresses, exact home addresses, bank details, payment references, and application or enrollment numbers. A country, university, degree name, subject name, seminar name, grade, credit count, or public institution may be kept when it is relevant.\n"
+            "- The anonymized request should be faithful to the latest request and its necessary prior context. Do not invent facts, do not answer the request, and do not omit relevant public conditions just to make the text short.\n"
             "- HARD RULE FOR ALL OUTPUTS, INCLUDING THE RERANKER QUERY: NEVER write student or applicant names, student IDs, national IDs, passport or NIE numbers, application numbers, enrollment numbers, bank details, payment references, or any other personally identifiable information. If those details appear in the email, replace them with a generic role such as 'student', 'applicant', or 'Erasmus student'. The only person names that may appear are university-side names such as professor, coordinator, or staff names, and only when the email is explicitly about that person as a retrieval target. If a generated query contains student-side personal data, that query is WRONG and must be rewritten.\n\n"
             "### OUTPUT FORMAT:\n"
-            "Output either the no-request tag or the retrieval queries and reranker query, never both.\n"
+            "Output either the no-request tag or the retrieval queries, reranker query, and anonymized request, never both.\n"
             f"If the email is no-request, output only {NO_REQUEST_OPENING_TAG}{NO_REQUEST_CLOSING_TAG} and stop.\n"
-            "Otherwise output only the retrieval queries and reranker query inside these tags.\n"
+            "Otherwise output only the retrieval queries, reranker query, and anonymized request inside these tags.\n"
             f"{QUERIES_OPENING_TAG}\n"
             f"{KEYWORD_QUERIES_OPENING_TAG}\n"
             f"{QUERY_OPENING_TAG}keyword query here{QUERY_CLOSING_TAG}\n"
@@ -997,7 +1020,8 @@ MODEL_PROFILES = {
             f"{QUERY_OPENING_TAG}question query here{QUERY_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_CLOSING_TAG}\n"
             f"{QUERIES_CLOSING_TAG}\n"
-            f"{RERANKER_QUERY_OPENING_TAG}clean reranker query here{RERANKER_QUERY_CLOSING_TAG}\n\n"
+            f"{RERANKER_QUERY_OPENING_TAG}clean reranker query here{RERANKER_QUERY_CLOSING_TAG}\n"
+            f"{ANONYMIZED_REQUEST_OPENING_TAG}full anonymized request for oracle answerability here{ANONYMIZED_REQUEST_CLOSING_TAG}\n\n"
             "### REQUEST EXAMPLE WITH CONTEXT:\n"
             "Thread context (oldest to newest, excluding the latest email):\n"
             "---\n"
@@ -1007,7 +1031,7 @@ MODEL_PROFILES = {
             "Subject: Possible transfer and collaboration with the University Paul Sabatier of Toulouse\n"
             "Body:\n"
             "Buenos días,\n"
-            "I am currently studying the Master in Data Science and I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
+            "My name is Maria Lopez and my national ID is 12345678Z. Last year I studied the Master in Data Science at Universidad Politecnica de Madrid, where I passed 42 credits with an average grade of 8.4/10. I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
             "\n[END MESSAGE]\n"
             "From: masteria.dia@fi.upm.es\n"
             "To: student@example.com\n"
@@ -1068,7 +1092,8 @@ MODEL_PROFILES = {
             f"{QUERY_OPENING_TAG}What administrative steps combine a master's transfer with external university mobility?{QUERY_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_CLOSING_TAG}\n"
             f"{QUERIES_CLOSING_TAG}\n"
-            f"{RERANKER_QUERY_OPENING_TAG}I need information about transferring from the Master in Data Science and about whether there is a mobility or collaboration option with the University Paul Sabatier of Toulouse, including the responsible office and procedure.{RERANKER_QUERY_CLOSING_TAG}\n\n"
+            f"{RERANKER_QUERY_OPENING_TAG}I need information about transferring from the Master in Data Science and about whether there is a mobility or collaboration option with the University Paul Sabatier of Toulouse, including the responsible office and procedure.{RERANKER_QUERY_CLOSING_TAG}\n"
+            f"{ANONYMIZED_REQUEST_OPENING_TAG}A student who previously studied the Master in Data Science at Universidad Politecnica de Madrid, passed 42 credits with an average grade of 8.4/10, and has not finished that master's wants to know whether they can transfer and whether they can do it in collaboration with the University Paul Sabatier of Toulouse, including which office or procedure applies.{ANONYMIZED_REQUEST_CLOSING_TAG}\n\n"
             "### NO-REQUEST EXAMPLE WITH THE SAME CONTEXT:\n"
             "Thread context (oldest to newest, excluding the latest email):\n"
             "---\n"
@@ -1078,7 +1103,7 @@ MODEL_PROFILES = {
             "Subject: Possible transfer and collaboration with the University Paul Sabatier of Toulouse\n"
             "Body:\n"
             "Buenos días,\n"
-            "I am currently studying the Master in Data Science and I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
+            "My name is Maria Lopez and my national ID is 12345678Z. Last year I studied the Master in Data Science at Universidad Politecnica de Madrid, where I passed 42 credits with an average grade of 8.4/10. I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
             "\n[END MESSAGE]\n"
             "From: masteria.dia@fi.upm.es\n"
             "To: student@example.com\n"
@@ -1106,7 +1131,7 @@ MODEL_PROFILES = {
             "Subject: Possible transfer and collaboration with the University Paul Sabatier of Toulouse\n"
             "Body:\n"
             "Buenos días,\n"
-            "I am currently studying the Master in Data Science and I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
+            "My name is Maria Lopez and my national ID is 12345678Z. Last year I studied the Master in Data Science at Universidad Politecnica de Madrid, where I passed 42 credits with an average grade of 8.4/10. I would like to transfer without finishing it. If possible, I would also like to do it in collaboration with the University Paul Sabatier of Toulouse. Is that possible and which office or procedure should I follow?\n"
             "\n[END MESSAGE]\n"
             "From: masteria.dia@fi.upm.es\n"
             "To: student@example.com\n"
@@ -1150,7 +1175,8 @@ MODEL_PROFILES = {
             f"{QUERY_OPENING_TAG}What administrative steps should I follow after deciding not to take the place?{QUERY_CLOSING_TAG}\n"
             f"{QUESTION_QUERIES_CLOSING_TAG}\n"
             f"{QUERIES_CLOSING_TAG}\n"
-            f"{RERANKER_QUERY_OPENING_TAG}I need information about which office handles withdrawing after paying the reservation fee and about the procedure to decline the place, including whether any refund is possible.{RERANKER_QUERY_CLOSING_TAG}\n\n"
+            f"{RERANKER_QUERY_OPENING_TAG}I need information about which office handles withdrawing after paying the reservation fee and about the procedure to decline the place, including whether any refund is possible.{RERANKER_QUERY_CLOSING_TAG}\n"
+            f"{ANONYMIZED_REQUEST_OPENING_TAG}A student who previously asked about transferring from the Master in Data Science and possible collaboration with the University Paul Sabatier of Toulouse now asks which office and procedure apply if they decline an admitted place after paying the reservation fee, including whether any refund is possible.{ANONYMIZED_REQUEST_CLOSING_TAG}\n\n"
             "Thread context (oldest to newest, excluding the latest email):\n"
             "---\n"
             "{thread_context}\n"
@@ -1190,6 +1216,7 @@ MODEL_PROFILES = {
             "A procedure-only chunk should move that example to label 0 only if the anonymized query is also explicitly asking how to carry out the request.\n\n"
             "### OUTPUT RULES:\n"
             "- Subqueries: The query may contain one or more subqueries. Output one subquery block for each subquery present in the query. If the query is really about a single issue, output exactly one subquery block. Each subquery block must contain the subquery text, the subquery answerability label, the subquery confidence, the subquery supporting chunk IDs, the subquery insufficient chunk IDs, and the subquery rationale.\n"
+            "- Source complementarity: Chunk IDs may be prefixed by source, such as web_ or email_. Judge each chunk independently, and do not collapse evidence to a single source by default. This evaluation is also used to measure data-source coverage and complementarity. If chunks from multiple sources contribute usable evidence for the same subquery, include useful IDs from each source in supporting chunk IDs, ordered from strongest to weakest support. If one source is clearly more precise, put it first; if sources are similarly useful or complementary, include both within the ID cap. Put a chunk from another source in insufficient chunk IDs only when it is related but does not contribute usable evidence for that subquery.\n"
             f"- Subquery answerability: At the subquery level, use label 1 when that subquery is fully answerable, label 0 when that subquery is only partially answerable because an important public piece is still missing, and label -1 when that subquery does not have meaningful support. For subquery labels 1 and 0, supporting chunk IDs may be used, with **at most {LLM_JUDGE_MAX_SUPPORTING_CHUNK_IDS} IDs**. Put a chunk in supporting chunk IDs only if it contributes usable information toward answering that same subquery, even if it is not enough for a full answer. Supporting chunk IDs must be ordered from strongest support to weakest support. If there are only a few strong supporting chunks, return only those few strong chunks. Fewer strong items are better than padding the list with weak or borderline positives. If a chunk is only loosely related, a near miss, or not clearly usable for answering the subquery, do not place it in supporting chunk IDs. For subquery label -1, the supporting chunk ID list must be empty. Insufficient chunk IDs may be used for any subquery label, with **at most {LLM_JUDGE_MAX_INSUFFICIENT_CHUNK_IDS} IDs**. Put a chunk in insufficient chunk IDs only if it is topically related but does not contribute usable information toward answering that same subquery, so it would not by itself justify label 0. You may use insufficient chunk IDs to show near-miss chunks that are thematically related but still do not answer the subquery. Insufficient chunk IDs must be ordered from closest miss to farthest miss. Again, do not fill the list just because capacity remains: fewer strong near misses are better than weak items. The same chunk ID must never appear in both supporting chunk IDs and insufficient chunk IDs for the same subquery. Subquery confidence must be a decimal number between 0.0 and 1.0 with exactly one decimal place.\n"
             "- Top-level answerability: The top-level answerability is the summary of the subquery answerability. If there is only one subquery, the top-level answerability must match that subquery label. If every subquery receives label 1, the top-level answerability must be 1. If at least one subquery receives label 0 or 1 but the full query is not fully answerable, the top-level answerability must be 0. If every subquery receives label -1, the top-level answerability must be -1.\n"
             "- Draft answer: If the top-level answerability label is 1 or 0, the draft answer is mandatory and must not be empty. It must be a brief reply of 1 to 2 short sentences that directly answers the query and sounds like a real email reply to the user. Write it as if you were replying from the MUIA side, using the role and account of the master's coordination/secretariat at masteria.dia@fi.upm.es. If the relevant office is that same MUIA coordination/secretariat side, answer directly instead of telling the student to contact that same email address. You may use facts contained in the chunks, but do not refer to the retrieval or judging process itself. Do not say things like 'the chunks say', 'the provided information indicates', 'the available information shows', or 'the retrieved evidence suggests'. When the chunks provide a concrete rule, limit, requirement, deadline, or office, state that concrete information explicitly instead of giving a vague procedural reply. If the top-level answerability label is -1, leave the draft answer empty.\n"

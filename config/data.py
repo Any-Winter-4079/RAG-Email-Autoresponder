@@ -5,6 +5,7 @@ VALID_THREAD_GROUPING_STRATEGIES = {
     "rule_based",
     "decoder_based",
 }
+N_CONTEXT_EMAILS = 160
 THREADS_PATH = f"data/threads/{THREAD_GROUPING_STRATEGY}/threads.json"
 DISCARDED_THREADS_PATH = f"data/discarded_threads/{THREAD_GROUPING_STRATEGY}/discarded_internal_threads.json"
 
@@ -30,9 +31,18 @@ EMAIL_KNOWLEDGE_BASE_PRE_CURATOR_STATISTICS_PLOT_PATH = (
 EMAIL_KNOWLEDGE_BASE_POST_CURATOR_STATISTICS_PLOT_PATH = (
     "data/knowledge_base/email_knowledge_base_post_curator_statistics.png"
 )
+EMAIL_KNOWLEDGE_BASE_NO_UPM_AUTHOR_THREADS_PATH = (
+    "data/knowledge_base/email_knowledge_base_no_upm_author_threads.json"
+)
+EMAIL_KNOWLEDGE_BASE_NO_UPM_AUTHOR_THREAD_CHUNKS_PATH = (
+    "data/knowledge_base/email_knowledge_base_no_upm_author_thread_chunks.json"
+)
+EMAIL_KNOWLEDGE_BASE_NO_USEFUL_INFORMATION_THREAD_CHUNKS_PATH = (
+    "data/knowledge_base/email_knowledge_base_no_useful_information_thread_chunks.json"
+)
 EMAIL_KNOWLEDGE_BASE_FILE_START = "email_knowledge_base_"
 EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX = "email_"
-EMAIL_KNOWLEDGE_BASE_REUSE_CURATION = True
+EMAIL_KNOWLEDGE_BASE_REUSE_CURATION = False
 EMAIL_KNOWLEDGE_BASE_REUSE_TIMESTAMP = None
 EMAIL_KNOWLEDGE_BASE_RECREATE_COLLECTIONS = True
 
@@ -58,17 +68,3 @@ REMOVE_INTERNAL_UPM_MESSAGES = True
 TRAIN_SPLIT_PCT = 0.7
 DEV_SPLIT_PCT = 0.15
 # TEST_SPLIT_PCT = 1 - (TRAIN_SPLIT_PCT + DEV_SPLIT_PCT)
-
-M3_FINETUNE_QUERY_TYPES = [
-    "reranker",
-]
-M3_FINETUNE_DATA_VARIANTS = [
-    "lm_summary_chunks",
-]
-M3_FINETUNE_ORACLE_DISCRIMINATOR_SPLIT = "train"
-M3_FINETUNE_VARIANT_TO_ORACLE_DISCRIMINATOR_TIMESTAMP = {
-    "lm_summary_chunks": None,
-}
-M3_FINETUNE_VARIANT_TO_RRF_TIMESTAMP = {
-    "lm_summary_chunks": None,
-}
