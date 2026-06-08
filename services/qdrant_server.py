@@ -7,6 +7,7 @@ from config.qdrant_server import (
     MIN_CONTAINERS,
     MAX_CONTAINERS,
     MAX_INPUTS,
+    NONPREEMPTIBLE,
     QDRANT_INTERNAL_PROXY_PORT,
     QDRANT_STARTUP_TIMEOUT,
     QDRANT_WEB_LABEL,
@@ -23,6 +24,7 @@ app = modal.App(QDRANT_SERVER_APP_NAME)
     scaledown_window=SCALEDOWN_WINDOW,
     min_containers=MIN_CONTAINERS,
     max_containers=MAX_CONTAINERS,
+    nonpreemptible=NONPREEMPTIBLE,
     volumes={VOLUME_PATH: rag_volume},
 )
 @modal.concurrent(max_inputs=MAX_INPUTS)

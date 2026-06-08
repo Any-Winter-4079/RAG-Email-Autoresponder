@@ -28,18 +28,15 @@ def run_email_agent():
     from helpers.decoder import count_tokens, truncate_to_tokens
 
     from helpers.data import (
-        assign_thread_ids_by_subject_and_participant_overlap_for_production,
-        get_unquoted_text
+        assign_thread_ids_by_subject_and_participant_overlap_for_production
     )
     from config.decoder import MODEL_PROFILES, EMAIL_WRITER_PROFILE
     from config.crawler_agent import CRAWL_DAY, CRAWL_MONTH
     from config.email_agent import (
         MAX_EMAILS,
-        N_CONTEXT_EMAILS_PER_FOLDER,
-        MAX_UNQUOTED_TOKENS_PER_CURRENT_EMAIL,
-        MAX_UNQUOTED_TOKENS_PER_CONTEXT_EMAIL,
-        MAX_QUOTED_TOKENS_PER_CURRENT_EMAIL,
-        MAX_QUOTED_TOKENS_PER_CONTEXT_EMAIL,
+        EMAIL_WRITER_BODY_TOKEN_RATIO,
+        EMAIL_WRITER_THREAD_CONTEXT_TOKEN_RATIO,
+        EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO,
         INBOX_FOLDER,
         SENT_FOLDER,
         UNREAD_ONLY,
@@ -134,7 +131,7 @@ def run_email_agent():
 
     # load additional context emails from inbox and sent folders
     context_inbox_emails = read_latest_emails(
-        max_emails=N_CONTEXT_EMAILS_PER_FOLDER,
+        max_emails=None,
         folder=INBOX_FOLDER,
         last_n_days=LAST_N_DAYS,
         imap_email=imap_email,
@@ -148,7 +145,7 @@ def run_email_agent():
     # reverse to match config/decoder's oldest to newest
     context_inbox_emails = list(reversed(context_inbox_emails))
     context_sent_emails = read_latest_emails(
-        max_emails=N_CONTEXT_EMAILS_PER_FOLDER,
+        max_emails=None,
         folder=SENT_FOLDER,
         last_n_days=LAST_N_DAYS,
         imap_email=imap_email,
@@ -168,10 +165,7 @@ def run_email_agent():
     )
 
     # total context emails are the "set" of inbox emails, sent emails, and emails to answer
-    # because we could have (rare albeit possible):
-    # MAX_EMAILS = 1 (email 20)
-    # N_CONTEXT_EMAILS_PER_FOLDER = 20 (emails 0-19)
-    # normalized_subject(email_20) != normalized subjects of emails 0-19 so it becomes contextless
+    # because the unread emails to answer must be present in the thread assignment window
     combined_context_emails = context_inbox_emails + context_sent_emails + list(reversed(emails))
     # we require inbox+sent+emails (to reply to) to form the thread ids, despite later
     # separating again 
@@ -193,14 +187,27 @@ def run_email_agent():
     # select decoder configuration for email writing
     email_writer_profile_config = MODEL_PROFILES[EMAIL_WRITER_PROFILE].copy()
 
-    # pop (and save) "prompt_template" and "max_context_tokens" (run_local_lm_or_vlm would not expect them)
+    # pop config keys run_local_lm_or_vlm would not expect
+    email_writer_profile_config.pop("decoder_app_name")
+    email_writer_profile_config.pop("decoder_function_name")
     prompt_template = email_writer_profile_config.pop("prompt_template")
-    max_context_tokens = email_writer_profile_config.pop("max_context_tokens")
-
-    # calculate max new tokens budget based on thinking mode, max context tokens
-    enable_thinking = email_writer_profile_config.get("enable_thinking", False)
-    input_token_budget = max_context_tokens // 3 if enable_thinking else max_context_tokens // 2
-    email_writer_profile_config["max_new_tokens"] = max_context_tokens - input_token_budget
+    max_input_tokens = email_writer_profile_config.pop("max_input_tokens")
+    body_token_budget = max(1, int(max_input_tokens * EMAIL_WRITER_BODY_TOKEN_RATIO))
+    thread_context_token_budget = max(
+        1,
+        int(max_input_tokens * EMAIL_WRITER_THREAD_CONTEXT_TOKEN_RATIO),
+    )
+    rag_context_token_budget = max(
+        1,
+        int(max_input_tokens * EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO),
+    )
+    print(
+        "run_email_agent: email writer token budgets: "
+        f"input={max_input_tokens:,} | "
+        f"body={body_token_budget:,} | "
+        f"thread_context={thread_context_token_budget:,} | "
+        f"rag_context={rag_context_token_budget:,}"
+    )
 
     # get decoder tokenizer 
     decoder_path = email_writer_profile_config["model_name_or_path"]
@@ -243,10 +250,6 @@ def run_email_agent():
         #     continue
         print(f"run_email_agent: generating reply for '{original_subject}' from {original_sender}")
 
-        # if current email already includes quoted history, skip thread context
-        _, original_quoted_body = get_unquoted_text(original_body, return_quoted=True)
-        skip_thread_context = bool((original_quoted_body or "").strip())
-
         # get thread context emails for this email
         email_id = email.get("id")
         thread_id = email_id_to_thread_id.get(email_id)
@@ -255,26 +258,19 @@ def run_email_agent():
             for context_email in thread_id_to_emails.get(thread_id, [])
             if context_email.get("id") != email_id
         ]
-        # sort from most recent/latest to original (high to low datetime)
+        # sort from oldest to newest
         thread_context_emails = sorted(
             thread_context_emails,
             key=lambda context_email: context_email.get("date") or datetime.min,
-            reverse=True
         )
-        # get original email (that started the thread) and the rest (latest to oldest)
-        if thread_context_emails:
-            first_email = thread_context_emails[-1]
-            other_emails_latest_first = thread_context_emails[:-1]
-        else:
-            first_email = None
-            other_emails_latest_first = []
+        has_prior_thread_context = bool(thread_context_emails)
 
         # get unquoted/quoted body text for the current email and truncate them
         original_body_compacted = compact_email_body_for_decoder(
             decoder_tokenizer,
             original_body,
-            MAX_UNQUOTED_TOKENS_PER_CURRENT_EMAIL,
-            MAX_QUOTED_TOKENS_PER_CURRENT_EMAIL,
+            body_token_budget,
+            0 if has_prior_thread_context else body_token_budget,
             "[text omitted: body missing]",
             unquoted_fail_placeholder=None,
             quoted_fail_placeholder="[quoted text omitted: tokenization failed]",
@@ -297,17 +293,16 @@ def run_email_agent():
         except KeyError as e:
             print(f"run_email_agent: error formatting email writer prompt template (without body): {e}")
             continue
-        base_prompt_tokens = count_tokens(decoder_tokenizer, base_prompt)
-        available_body_tokens = input_token_budget - base_prompt_tokens
-        if available_body_tokens <= 0:
-            print("run_email_agent: skipping email because no token budget left for body")
+        n_base_prompt_tokens = count_tokens(decoder_tokenizer, base_prompt)
+        if n_base_prompt_tokens > max_input_tokens:
+            print("run_email_agent: skipping email because base prompt exceeds input token budget")
             continue
-        body_tokens = count_tokens(decoder_tokenizer, original_body_compacted)
-        if body_tokens > available_body_tokens:
+        n_body_tokens = count_tokens(decoder_tokenizer, original_body_compacted)
+        if n_body_tokens > body_token_budget:
             original_body_compacted = truncate_to_tokens(
                 decoder_tokenizer,
                 original_body_compacted,
-                available_body_tokens
+                body_token_budget
             )
             if original_body_compacted is None:
                 print("run_email_agent: skipping email because body truncation failed")
@@ -328,90 +323,59 @@ def run_email_agent():
             print(f"run_email_agent: error formatting email writer prompt template (with body): {e}")
             continue
         prompt_tokens = count_tokens(decoder_tokenizer, prompt)
-        if prompt_tokens > input_token_budget:
+        if prompt_tokens > max_input_tokens:
             print("run_email_agent: skipping email because base prompt exceeds input token budget")
             continue
 
-        # add context emails (if tokens fit) starting with first_email, then most recent to oldest, 
-        # if email to reply to doesn't already contain quoted text
-        # NOTE: this is a simplification, given email could have quoted text but not be the full
-        # thread. It can also happen N_CONTEXT_EMAILS_PER_FOLDER aren't enough to reconstruct as
-        # much as the quoted text in the email to answer, so we can't rely on it either. We'd have
-        # to semantically or format-aware check if quoted text in the email to reply to contains
-        # the full thread or they complement each other, but this is a fair approximation for
-        # a 1st prototype
+        # add reconstructed context emails if they fit; quoted content is stripped
+        # to avoid recursively duplicating earlier messages
         thread_context = ""
         message_separator = "\n[END MESSAGE]\n"
-        if first_email and not skip_thread_context:
-            first_email_body = compact_email_body_for_decoder(
+        for context_email in thread_context_emails:
+            context_email_body = context_email.get("message_body")
+            if not context_email_body:
+                print("run_email_agent: skipping context email because body is missing")
+                continue
+            context_email_body = compact_email_body_for_decoder(
                 decoder_tokenizer,
-                first_email.get("message_body"),
-                MAX_UNQUOTED_TOKENS_PER_CONTEXT_EMAIL,
-                MAX_QUOTED_TOKENS_PER_CONTEXT_EMAIL,
+                context_email_body,
+                thread_context_token_budget,
+                0,
                 "[text omitted: body missing]",
                 unquoted_fail_placeholder="[text omitted: tokenization failed]",
                 quoted_fail_placeholder="[quoted text omitted: tokenization failed]",
                 log_prefix="run_email_agent: context email"
             )
-            first_email_from = (first_email.get("from") or "").strip()
-            first_email_to = (first_email.get("to") or "").strip()
-            first_email_subject = (first_email.get("subject") or "").strip()
-            first_email_date = first_email.get("date")
-            first_email_date_text = str(first_email_date) if first_email_date else ""
+            if context_email_body is None:
+                continue
+            context_email_from = (context_email.get("from") or "").strip()
+            context_email_to = (context_email.get("to") or "").strip()
+            context_email_subject = (context_email.get("subject") or "").strip()
+            context_email_date = context_email.get("date")
+            context_email_date_text = str(context_email_date) if context_email_date else ""
             block_header = (
-                "From: " + first_email_from + "\n"
-                "To: " + first_email_to + "\n"
-                "Date: " + first_email_date_text + "\n"
-                "Subject: " + first_email_subject + "\n"
+                "From: " + context_email_from + "\n"
+                "To: " + context_email_to + "\n"
+                "Date: " + context_email_date_text + "\n"
+                "Subject: " + context_email_subject + "\n"
                 "Body:\n"
             )
-            # form thread context with first email
-            thread_context = f"{block_header}{first_email_body}{message_separator}".strip()
-            # if first email fits, add latest emails until budget is reached
-            thread_context_tokens = count_tokens(decoder_tokenizer, thread_context)
-            if prompt_tokens + thread_context_tokens <= input_token_budget:
-                for other_email in other_emails_latest_first:
-                    other_email_body = other_email.get("message_body")
-                    if not other_email_body:
-                        print("run_email_agent: skipping context email because body is missing")
-                        continue
-                    other_email_body = compact_email_body_for_decoder(
+            candidate_context = f"{thread_context}\n{block_header}{context_email_body}{message_separator}".strip()
+            candidate_tokens = count_tokens(decoder_tokenizer, candidate_context)
+            if candidate_tokens > thread_context_token_budget:
+                if not thread_context:
+                    candidate_context = truncate_to_tokens(
                         decoder_tokenizer,
-                        other_email_body,
-                        MAX_UNQUOTED_TOKENS_PER_CONTEXT_EMAIL,
-                        MAX_QUOTED_TOKENS_PER_CONTEXT_EMAIL,
-                        "[text omitted: body missing]",
-                        unquoted_fail_placeholder="[text omitted: tokenization failed]",
-                        quoted_fail_placeholder="[quoted text omitted: tokenization failed]",
-                        log_prefix="run_email_agent: context email"
+                        candidate_context,
+                        thread_context_token_budget
                     )
-                    other_email_from = (other_email.get("from") or "").strip()
-                    other_email_to = (other_email.get("to") or "").strip()
-                    other_email_subject = (other_email.get("subject") or "").strip()
-                    other_email_date = other_email.get("date")
-                    other_email_date_text = str(other_email_date) if other_email_date else ""
-                    other_block_header = (
-                        "From: " + other_email_from + "\n"
-                        "To: " + other_email_to + "\n"
-                        "Date: " + other_email_date_text + "\n"
-                        "Subject: " + other_email_subject + "\n"
-                        "Body:\n"
-                    )
-                    candidate_context = f"{thread_context}\n{other_block_header}{other_email_body}{message_separator}".strip()
-                    candidate_tokens = count_tokens(decoder_tokenizer, candidate_context)
-                    if prompt_tokens + candidate_tokens > input_token_budget:
-                        break
-                    thread_context = candidate_context
-            else:
-                print("run_email_agent: skipping first email because base && first email prompt exceeds input token budget")
-                thread_context = ""
+                    if candidate_context is not None:
+                        thread_context = candidate_context
+                break
+            thread_context = candidate_context
 
         if not thread_context:
-            thread_context = (
-                "(conversation already quoted in the current email)"
-                if skip_thread_context
-                else "(no prior messages found)"
-            )
+            thread_context = "(no prior messages found)"
 
         # construct prompt
         try:
@@ -426,6 +390,10 @@ def run_email_agent():
             )
         except KeyError as e:
             print(f"run_email_agent: error formatting email writer prompt template (with body and context): {e}")
+            continue
+        prompt_tokens = count_tokens(decoder_tokenizer, prompt)
+        if prompt_tokens > max_input_tokens:
+            print("run_email_agent: skipping email because prompt exceeds input token budget")
             continue
 
         # run decoder (without "template" in email_writer_profile_config)

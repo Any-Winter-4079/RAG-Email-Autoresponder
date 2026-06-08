@@ -6,6 +6,7 @@ from config.modal_apps import (
 )
 from config.modal_functions import (
     CREATE_COLLECTIONS_FUNCTION_NAME,
+    ENABLE_COLLECTION_OPTIMIZATIONS_FUNCTION_NAME,
     WRITE_BATCH_POINTS_FUNCTION_NAME,
     WRITE_CHUNK_RECORDS_FUNCTION_NAME,
 )
@@ -16,7 +17,9 @@ from config.crawler_agent import (
     CRAWL_HOUR,
     CRAWL_DAY,
     CRAWL_MONTH,
-    WRITE_POINTS_BATCH_SIZE
+    WRITE_POINTS_BATCH_SIZE,
+    LATE_WRITE_POINTS_BATCH_SIZE,
+    MULTI_KIND_EMBEDDINGS_WITH_LATE_WRITE_POINTS_BATCH_SIZE,
 )
 import modal
 
@@ -27,7 +30,7 @@ app = modal.App(CRAWLER_AGENT_APP_NAME)
         image=image,
         secrets=[modal_secret],
         # with Cron format "Minute Hour Day Month DayOfWeek":
-        # "{CRAWL_MINUTES} {CRAWL_HOUR} {CRAWL_DAY} {CRAWL_MONTH} *" -> 9:00 AM on the {CRAWL_DAY} of {CRAWL_MONTH}
+        # "09109 *" -> 9:00 AM on the 10th of September
         schedule=modal.Cron(f"{CRAWL_MINUTES} {CRAWL_HOUR} {CRAWL_DAY} {CRAWL_MONTH} *"),
         timeout=MODAL_TIMEOUT,
         volumes={VOLUME_PATH: rag_volume},
@@ -50,6 +53,10 @@ async def run_crawler_agent():
         EMAIL_WRITER_PROFILE,
         MAX_CONCURRENT_BATCHES,
         MODEL_PROFILES as DECODER_MODEL_PROFILES,
+    )
+    from config.email_agent import (
+        EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO,
+        TOP_K_AFTER_RERANK,
     )
     from config.encoder import EMBEDDING_ENCODERS
     from config.crawler_agent import (
@@ -95,8 +102,6 @@ async def run_crawler_agent():
         local_results = {
             "url": url,
             "content": content,
-            "raw_chunks": [],
-            "manually_cleaned_chunks": [],
             "lm_cleaned_text_chunks": [],
             "lm_abstract_chunks": [],
             "lm_summary_chunks": [],
@@ -118,38 +123,6 @@ async def run_crawler_agent():
         # count manually cleaned tokens for encoder
         manually_cleaned_encoder_tokens = count_tokens(encoder_tokenizer, content["manually_cleaned"]["text"])
         content["manually_cleaned"]["encoder_token_count"] = manually_cleaned_encoder_tokens
-
-        # chunk raw content
-        try:
-            raw_text_chunks = embedding_splitter.split_text(content["raw"]["text"])
-            for idx, chunk_text in enumerate(raw_text_chunks):
-                local_results["raw_chunks"].append({
-                    "url": url,
-                    "category": category,
-                    "depth": depth,
-                    "chunk_index": idx,
-                    "text": chunk_text,
-                    "decoder_token_count": count_tokens(decoder_tokenizer, chunk_text),
-                    "encoder_token_count": count_tokens(encoder_tokenizer, chunk_text)
-                })
-        except Exception as e:
-            print(f"run_crawler_agent: error splitting raw {url}: {e}")
-        
-        # chunk manually cleaned content
-        try:
-            text_chunks = embedding_splitter.split_text(content["manually_cleaned"]["text"])
-            for idx, chunk_text in enumerate(text_chunks):
-                local_results["manually_cleaned_chunks"].append({
-                    "url": url,
-                    "category": category,
-                    "depth": depth,
-                    "chunk_index": idx,
-                    "text": chunk_text,
-                    "decoder_token_count": count_tokens(decoder_tokenizer, chunk_text),
-                    "encoder_token_count": count_tokens(encoder_tokenizer, chunk_text)
-                })
-        except Exception as e:
-            print(f"run_crawler_agent: error splitting manually cleaned {url}: {e}")
 
         # clean with lm
         try:
@@ -348,11 +321,22 @@ async def run_crawler_agent():
     encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_path, trust_remote_code=True)
     decoder_tokenizer = AutoTokenizer.from_pretrained(decoder_path, trust_remote_code=True)
 
-    embedding_chunk_size = encoder_sizes[chunking_encoder]
+    email_writer_max_input_tokens = DECODER_MODEL_PROFILES[EMAIL_WRITER_PROFILE]["max_input_tokens"]
+    rag_context_token_budget = int(
+        email_writer_max_input_tokens * EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO
+    )
+    rag_chunk_token_budget = max(1, rag_context_token_budget // TOP_K_AFTER_RERANK)
+    encoder_chunk_size = encoder_sizes[chunking_encoder]
+    if encoder_chunk_size <= rag_chunk_token_budget:
+        embedding_chunk_size = encoder_chunk_size
+        chunking_tokenizer = encoder_tokenizer
+    else:
+        embedding_chunk_size = rag_chunk_token_budget
+        chunking_tokenizer = decoder_tokenizer
     embedding_splitter = SentenceSplitter(
         chunk_size=embedding_chunk_size,
         chunk_overlap=CHUNK_OVERLAP,
-        tokenizer=lambda text: encoder_tokenizer.encode(text, add_special_tokens=False)
+        tokenizer=lambda text: chunking_tokenizer.encode(text, add_special_tokens=False)
     )
 
     variant_file_paths = {}
@@ -369,9 +353,9 @@ async def run_crawler_agent():
     if RUN_ENCODING or REUSE_CRAWL:
         for variant in ENCODE_VARIANTS.keys():
             if variant == "raw_chunks":
-                variant_paths[variant] = RAW_CHUNKS_PATH
+                variant_paths[variant] = RAW_PATH
             elif variant == "manually_cleaned_chunks":
-                variant_paths[variant] = MANUALLY_CLEANED_CHUNKS_PATH
+                variant_paths[variant] = MANUALLY_CLEANED_PATH
             elif variant == "lm_cleaned_text_chunks":
                 variant_paths[variant] = LM_CLEANED_TEXT_CHUNKS_PATH
             elif variant == "lm_abstract_chunks":
@@ -506,8 +490,6 @@ async def run_crawler_agent():
             print(f"run_crawler_agent: {len(url_content_dict)} URLs to process")
 
         # post-process
-        raw_chunks = []
-        manually_cleaned_chunks = []
         lm_cleaned_text_chunks = []
         lm_abstract_chunks = []
         lm_summary_chunks = []
@@ -574,9 +556,6 @@ async def run_crawler_agent():
                 max_token_lengths["manually_cleaned"]["encoder"] = content["manually_cleaned"]["encoder_token_count"]
 
             # extend chunk lists and update max_token_lengths
-            raw_chunks.extend(result["raw_chunks"])
-            manually_cleaned_chunks.extend(result["manually_cleaned_chunks"])
-
             lm_cleaned_text_chunks.extend(result["lm_cleaned_text_chunks"])
             for chunk in result["lm_cleaned_text_chunks"]:
                 if chunk["decoder_token_count"] > max_token_lengths["lm_cleaned"]["cleaned_text"]["decoder"]:
@@ -609,7 +588,7 @@ async def run_crawler_agent():
                         max_token_lengths["lm_cleaned"]["q_and_a"]["encoder"] = pair_encoder_token_count
         
         # store all versions (raw, manually cleaned, lm cleaned, unchuncked and chunked) on file
-        for path in [CONFIGS_PATH, RAW_PATH, MANUALLY_CLEANED_PATH, RAW_CHUNKS_PATH, MANUALLY_CLEANED_CHUNKS_PATH,
+        for path in [CONFIGS_PATH, RAW_PATH, MANUALLY_CLEANED_PATH,
                     LM_CLEANED_TEXT_CHUNKS_PATH, LM_ABSTRACT_CHUNKS_PATH, LM_SUMMARY_CHUNKS_PATH, LM_Q_AND_A_CHUNKS_PATH]:
             os.makedirs(path, exist_ok=True)
 
@@ -628,14 +607,6 @@ async def run_crawler_agent():
             "manually_cleaned": {
                 "json": os.path.join(MANUALLY_CLEANED_PATH, f"{FILE_START}{timestamp}.jsonl"),
                 "txt": os.path.join(MANUALLY_CLEANED_PATH, f"{FILE_START}{timestamp}.txt")
-            },
-            "raw_chunks": {
-                "json": os.path.join(RAW_CHUNKS_PATH, f"{FILE_START}{timestamp}.jsonl"),
-                "txt": os.path.join(RAW_CHUNKS_PATH, f"{FILE_START}{timestamp}.txt")
-            },
-            "manually_cleaned_chunks": {
-                "json": os.path.join(MANUALLY_CLEANED_CHUNKS_PATH, f"{FILE_START}{timestamp}.jsonl"),
-                "txt": os.path.join(MANUALLY_CLEANED_CHUNKS_PATH, f"{FILE_START}{timestamp}.txt")
             },
             "lm_cleaned_text_chunks": {
                 "json": os.path.join(LM_CLEANED_TEXT_CHUNKS_PATH, f"{FILE_START}{timestamp}.jsonl"),
@@ -686,9 +657,7 @@ async def run_crawler_agent():
                     header_manually_cleaned = f"MANUALLY CLEANED PAGE {i+1}: {url} | Category: {category} | Depth: {depth} | Tokens {decoder_path}: {manually_cleaned_data['decoder_token_count']:,} | Tokens {encoder_path}: {manually_cleaned_data['encoder_token_count']:,}"
                     f_manually_cleaned_txt.write(f"\n{separator}\n{header_manually_cleaned}\n{separator}\n{manually_cleaned_data['text']}\n")
 
-            # save all chunk types
-            await write_chunk_records.remote.aio(raw_chunks, files["raw_chunks"]["json"], files["raw_chunks"]["txt"], "RAW", decoder_path, encoder_path)
-            await write_chunk_records.remote.aio(manually_cleaned_chunks, files["manually_cleaned_chunks"]["json"], files["manually_cleaned_chunks"]["txt"], "MANUALLY CLEANED", decoder_path, encoder_path)
+            # save LM chunk types
             await write_chunk_records.remote.aio(lm_cleaned_text_chunks, files["lm_cleaned_text_chunks"]["json"], files["lm_cleaned_text_chunks"]["txt"], "LM CLEANED TEXT", decoder_path, encoder_path)
             await write_chunk_records.remote.aio(lm_abstract_chunks, files["lm_abstract_chunks"]["json"], files["lm_abstract_chunks"]["txt"], "LM ABSTRACT", decoder_path, encoder_path)
             await write_chunk_records.remote.aio(lm_summary_chunks, files["lm_summary_chunks"]["json"], files["lm_summary_chunks"]["txt"], "LM SUMMARY", decoder_path, encoder_path)
@@ -707,9 +676,25 @@ async def run_crawler_agent():
 
         # select variants to encode
         if "raw_chunks" in ENCODE_VARIANTS:
-            variants_to_encode["raw_chunks"] = raw_chunks
+            variants_to_encode["raw_chunks"] = [
+                {
+                    "url": url,
+                    "category": data.get("category", "university"),
+                    "depth": data.get("depth"),
+                    "data": data["raw"],
+                }
+                for url, data in url_content_dict.items()
+            ]
         if "manually_cleaned_chunks" in ENCODE_VARIANTS:
-            variants_to_encode["manually_cleaned_chunks"] = manually_cleaned_chunks
+            variants_to_encode["manually_cleaned_chunks"] = [
+                {
+                    "url": url,
+                    "category": data.get("category", "university"),
+                    "depth": data.get("depth"),
+                    "data": data["manually_cleaned"],
+                }
+                for url, data in url_content_dict.items()
+            ]
         if "lm_cleaned_text_chunks" in ENCODE_VARIANTS:
             variants_to_encode["lm_cleaned_text_chunks"] = lm_cleaned_text_chunks
         if "lm_abstract_chunks" in ENCODE_VARIANTS:
@@ -730,8 +715,8 @@ async def run_crawler_agent():
         return
 
     # process data before encoding:
-    # if raw data is selected:              keep raw data as is
-    # if manually cleaned data is selected: keep manually cleaned data as is
+    # if raw data is selected:              subchunk raw data
+    # if manually cleaned data is selected: subchunk manually cleaned data
     # if lm cleaned data is selected:       subchunk LM cleaned data
     # if lm summaries is selected:          subchunk LM summaries
     # if lm Q&A is selected:                remove Q&A pairs over max size
@@ -759,7 +744,7 @@ async def run_crawler_agent():
                     pair_count += 1
                     # for Q&A, splitting probably does not make sense, so if we surpass
                     # the max_recommended_input_size, we simply skip the Q&A pair
-                    token_ids = encoder_tokenizer.encode(text, add_special_tokens=False)
+                    token_ids = chunking_tokenizer.encode(text, add_special_tokens=False)
                     if len(token_ids) > embedding_chunk_size:
                         if skipped_example is None:
                             preview_limit = embedding_chunk_size * 3
@@ -791,40 +776,46 @@ async def run_crawler_agent():
                 await write_chunk_records.remote.aio(valid_chunks, lm_q_only_json, lm_q_only_txt, "LM Q&A for Q only", decoder_path, encoder_path)
             prepared_variants_to_encode[variant] = valid_chunks
         else:
-            if variant in ["raw_chunks", "manually_cleaned_chunks"]:
-                print(f"run_crawler_agent: skipping re-splitting for {variant} (already chunked)")
-                items_to_encode = len(chunks)
-                prepared_variants_to_encode[variant] = chunks
-            else:
-                print(f"run_crawler_agent: splitting for {variant}")
-                prepared_chunks = []
-                for chunk_index, chunk in enumerate(chunks, start=1):
-                    text = chunk["text"].strip()
-                    # for summaries, etc., we can split and keep meaning
-                    split_texts = embedding_splitter.split_text(text)
-                    for split_index, split_text in enumerate(split_texts):
-                        items_to_encode += 1
-                        prepared_chunks.append({
-                            "url": chunk["url"],
-                            "category": chunk.get("category", "university"),
-                            "depth": chunk.get("depth"),
-                            "chunk_index": chunk_index,
-                            "subchunk_index": split_index + 1,
-                            "text": split_text,
-                            "decoder_token_count": count_tokens(decoder_tokenizer, split_text),
-                            "encoder_token_count": count_tokens(encoder_tokenizer, split_text)
-                        })
-                if variant == "lm_cleaned_text_chunks":
-                    os.makedirs(LM_CLEANED_TEXT_SUBCHUNKS_PATH, exist_ok=True)
-                    lm_cleaned_json = os.path.join(LM_CLEANED_TEXT_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
-                    lm_cleaned_txt = os.path.join(LM_CLEANED_TEXT_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
-                    await write_chunk_records.remote.aio(prepared_chunks, lm_cleaned_json, lm_cleaned_txt, "LM CLEANED TEXT", decoder_path, encoder_path)
-                if variant == "lm_summary_chunks":
-                    os.makedirs(LM_SUMMARY_SUBCHUNKS_PATH, exist_ok=True)
-                    lm_summary_json = os.path.join(LM_SUMMARY_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
-                    lm_summary_txt = os.path.join(LM_SUMMARY_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
-                    await write_chunk_records.remote.aio(prepared_chunks, lm_summary_json, lm_summary_txt, "LM SUMMARY", decoder_path, encoder_path)
-                prepared_variants_to_encode[variant] = prepared_chunks
+            print(f"run_crawler_agent: splitting for {variant}")
+            prepared_chunks = []
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                text_data = chunk.get("data", chunk)
+                text = text_data["text"].strip()
+                # for summaries, etc., we can split and keep meaning
+                split_texts = embedding_splitter.split_text(text)
+                for split_index, split_text in enumerate(split_texts):
+                    items_to_encode += 1
+                    prepared_chunks.append({
+                        "url": chunk["url"],
+                        "category": chunk.get("category", "university"),
+                        "depth": chunk.get("depth"),
+                        "chunk_index": chunk_index,
+                        "subchunk_index": split_index + 1,
+                        "text": split_text,
+                        "decoder_token_count": count_tokens(decoder_tokenizer, split_text),
+                        "encoder_token_count": count_tokens(encoder_tokenizer, split_text)
+                    })
+            if variant == "raw_chunks":
+                os.makedirs(RAW_CHUNKS_PATH, exist_ok=True)
+                raw_json = os.path.join(RAW_CHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
+                raw_txt = os.path.join(RAW_CHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
+                await write_chunk_records.remote.aio(prepared_chunks, raw_json, raw_txt, "RAW", decoder_path, encoder_path)
+            if variant == "manually_cleaned_chunks":
+                os.makedirs(MANUALLY_CLEANED_CHUNKS_PATH, exist_ok=True)
+                manually_cleaned_json = os.path.join(MANUALLY_CLEANED_CHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
+                manually_cleaned_txt = os.path.join(MANUALLY_CLEANED_CHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
+                await write_chunk_records.remote.aio(prepared_chunks, manually_cleaned_json, manually_cleaned_txt, "MANUALLY CLEANED", decoder_path, encoder_path)
+            if variant == "lm_cleaned_text_chunks":
+                os.makedirs(LM_CLEANED_TEXT_SUBCHUNKS_PATH, exist_ok=True)
+                lm_cleaned_json = os.path.join(LM_CLEANED_TEXT_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
+                lm_cleaned_txt = os.path.join(LM_CLEANED_TEXT_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
+                await write_chunk_records.remote.aio(prepared_chunks, lm_cleaned_json, lm_cleaned_txt, "LM CLEANED TEXT", decoder_path, encoder_path)
+            if variant == "lm_summary_chunks":
+                os.makedirs(LM_SUMMARY_SUBCHUNKS_PATH, exist_ok=True)
+                lm_summary_json = os.path.join(LM_SUMMARY_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.jsonl")
+                lm_summary_txt = os.path.join(LM_SUMMARY_SUBCHUNKS_PATH, f"{FILE_START}{encode_timestamp}.txt")
+                await write_chunk_records.remote.aio(prepared_chunks, lm_summary_json, lm_summary_txt, "LM SUMMARY", decoder_path, encoder_path)
+            prepared_variants_to_encode[variant] = prepared_chunks
 
         encode_stats.append({
             "variant": variant,
@@ -851,7 +842,7 @@ async def run_crawler_agent():
         else:
             print(f"run_crawler_agent: {variant}: {chunk_count} chunks: {items_to_encode} items to encode")
 
-    if any(variant in variants_to_encode for variant in ["lm_cleaned_text_chunks", "lm_summary_chunks", "lm_q_and_a_chunks", "lm_q_and_a_for_q_only_chunks"]):
+    if prepared_variants_to_encode:
         rag_volume.commit()
         print("run_crawler_agent: volume committed")
 
@@ -922,7 +913,18 @@ async def run_crawler_agent():
 
         embeddings_by_batch = await gather_encoder_embeddings()
         # allows for decoupled encoder and write points batch size
-        write_points_batch_size = max(1, WRITE_POINTS_BATCH_SIZE // len(encoder_config["embedding_kinds"]))
+        if "late" in encoder_config["embedding_kinds"]:
+            if not len(encoder_config["embedding_kinds"]) > 1:
+                write_points_batch_size = LATE_WRITE_POINTS_BATCH_SIZE
+            else:
+                write_points_batch_size = MULTI_KIND_EMBEDDINGS_WITH_LATE_WRITE_POINTS_BATCH_SIZE
+        elif len(encoder_config["embedding_kinds"]) > 1:
+            write_points_batch_size = max(
+                len(batch["point_ids"])
+                for _, batch, _ in batch_jobs
+            )
+        else:
+            write_points_batch_size = WRITE_POINTS_BATCH_SIZE
         batch_jobs_for_writing = []
         batch_to_embeddings_for_writing = []
         current_variant = batch_jobs[0][0]
@@ -933,36 +935,39 @@ async def run_crawler_agent():
         }
         current_upsert_or_update = batch_jobs[0][2]
         for (variant, batch, upsert_or_update), embeddings in zip(batch_jobs, embeddings_by_batch):
-            # WRITE_POINTS_BATCH_SIZE is meant to be as large as/larger than encoding batch size
-            if len(batch["point_ids"]) > write_points_batch_size:
-                raise ValueError(
-                    "run_crawler_agent: encoder batch size exceeds WRITE_POINTS_BATCH_SIZE:\n"
-                    f"\tvariant: {variant}\n"
-                    f"\tencoder: {encoder_name}\n"
-                    f"\tn points in encoder batch: {len(batch['point_ids'])}\n"
-                    f"\tWRITE_POINTS_BATCH_SIZE: {write_points_batch_size}"
-                )
-            if variant != current_variant or len(current_batch_jobs_for_writing[1]["point_ids"]) + len(batch["point_ids"]) > write_points_batch_size:
-                # close current batch
-                current_batch_jobs_for_writing[0] = current_variant
-                current_batch_jobs_for_writing[2] = current_upsert_or_update
-                batch_jobs_for_writing.append(current_batch_jobs_for_writing)
-                batch_to_embeddings_for_writing.append(current_embeddings)
-                # start new batch
-                current_batch_jobs_for_writing = [variant, {"texts": [], "point_ids": [], "payloads": []}, None]
-                current_variant = variant
-                current_embeddings = {
-                    embedding_kind: []
+            # split encoder batches when write points batch size is smaller
+            for batch_start in range(0, len(batch["point_ids"]), write_points_batch_size):
+                batch_end = batch_start + write_points_batch_size
+                batch_for_writing = {
+                    "texts": batch["texts"][batch_start:batch_end],
+                    "point_ids": batch["point_ids"][batch_start:batch_end],
+                    "payloads": batch["payloads"][batch_start:batch_end],
+                }
+                embeddings_for_writing = {
+                    embedding_kind: embeddings[embedding_kind][batch_start:batch_end]
                     for embedding_kind in encoder_config["embedding_kinds"]
                 }
-                current_upsert_or_update = upsert_or_update
-            # extend both when closing a batch (with the new or non-fitting data
-            # that triggered the flush) and when mid-batch
-            current_batch_jobs_for_writing[1]["texts"].extend(batch["texts"])
-            current_batch_jobs_for_writing[1]["point_ids"].extend(batch["point_ids"])
-            current_batch_jobs_for_writing[1]["payloads"].extend(batch["payloads"])
-            for embedding_kind in encoder_config["embedding_kinds"]:
-                current_embeddings[embedding_kind].extend(embeddings[embedding_kind])
+                if variant != current_variant or len(current_batch_jobs_for_writing[1]["point_ids"]) + len(batch_for_writing["point_ids"]) > write_points_batch_size:
+                    # close current batch
+                    current_batch_jobs_for_writing[0] = current_variant
+                    current_batch_jobs_for_writing[2] = current_upsert_or_update
+                    batch_jobs_for_writing.append(current_batch_jobs_for_writing)
+                    batch_to_embeddings_for_writing.append(current_embeddings)
+                    # start new batch
+                    current_batch_jobs_for_writing = [variant, {"texts": [], "point_ids": [], "payloads": []}, None]
+                    current_variant = variant
+                    current_embeddings = {
+                        embedding_kind: []
+                        for embedding_kind in encoder_config["embedding_kinds"]
+                    }
+                    current_upsert_or_update = upsert_or_update
+                # extend both when closing a batch (with the new or non-fitting data
+                # that triggered the flush) and when mid-batch
+                current_batch_jobs_for_writing[1]["texts"].extend(batch_for_writing["texts"])
+                current_batch_jobs_for_writing[1]["point_ids"].extend(batch_for_writing["point_ids"])
+                current_batch_jobs_for_writing[1]["payloads"].extend(batch_for_writing["payloads"])
+                for embedding_kind in encoder_config["embedding_kinds"]:
+                    current_embeddings[embedding_kind].extend(embeddings_for_writing[embedding_kind])
 
         # close last batch
         if current_batch_jobs_for_writing:
@@ -989,6 +994,18 @@ async def run_crawler_agent():
         if not await asyncio.to_thread(persist_qdrant_storage, "run_crawler_agent"):
             return
         print(f"run_crawler_agent: completed encoder '{encoder_name}'")
+
+    try:
+        enable_collection_optimizations = modal.Function.from_name(
+            COLLECTION_HANDLER_APP_NAME,
+            ENABLE_COLLECTION_OPTIMIZATIONS_FUNCTION_NAME,
+        )
+    except Exception as e:
+        print(f"run_crawler_agent: failed to find {COLLECTION_HANDLER_APP_NAME}.{ENABLE_COLLECTION_OPTIMIZATIONS_FUNCTION_NAME}. Is it deployed? Error: {e}")
+        return
+    await enable_collection_optimizations.remote.aio(list(prepared_variants_to_encode.keys()))
+    if not await asyncio.to_thread(persist_qdrant_storage, "run_crawler_agent"):
+        return
 
     print("run_crawler_agent: encoder dispatch complete")
 

@@ -41,12 +41,17 @@ def run_email_knowledge_base_curator_pipeline(
         EMAIL_KNOWLEDGE_BASE_MAX_THREADS,
         EMAIL_KNOWLEDGE_BASE_RECREATE_COLLECTIONS,
         EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX,
+        UPM_DOMAINS,
     )
     from config.decoder import (
         EMAIL_KNOWLEDGE_BASE_CURATOR_PROFILE,
         EMAIL_WRITER_PROFILE,
         MAX_CONCURRENT_BATCHES,
         MODEL_PROFILES,
+    )
+    from config.email_agent import (
+        EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO,
+        TOP_K_AFTER_RERANK,
     )
     from config.encoder import EMBEDDING_ENCODERS
     from config.modal_apps import (
@@ -57,33 +62,105 @@ def run_email_knowledge_base_curator_pipeline(
     from config.modal_functions import (
         COUNT_DECODER_LATEST_TOKENS_FUNCTION_NAME,
         CREATE_COLLECTIONS_FUNCTION_NAME,
+        ENABLE_COLLECTION_OPTIMIZATIONS_FUNCTION_NAME,
         READ_JSONL_RECORDS_FUNCTION_NAME,
         WRITE_BATCH_POINTS_FUNCTION_NAME,
         WRITE_CHUNK_RECORDS_FUNCTION_NAME,
     )
-    from helpers.data import (
+    from helpers.curator import (
         build_email_thread_knowledge_base_chunks,
-        prepare_batches_for_data_variant,
         run_email_knowledge_base_curator_on_threads,
     )
+    from helpers.data import prepare_batches_for_data_variant
     from helpers.decoder import count_tokens
     from helpers.qdrant import ensure_qdrant_server_ready, persist_qdrant_storage
 
-    variant_to_reuse_folder_name = {
-        f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_cleaned_text_chunks": (
-            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_cleaned_text_subchunks"
+    base_variant_to_folder_name = {
+        "lm_cleaned_text_chunks": (
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_cleaned_text_chunks"
         ),
-        f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_summary_chunks": (
-            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_summary_subchunks"
+        "lm_summary_chunks": (
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_summary_chunks"
         ),
-        f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_chunks": (
-            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_valid_chunks"
-        ),
-        f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_for_q_only_chunks": (
-            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_for_q_only_valid_chunks"
+        "lm_q_and_a_chunks": (
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_chunks"
         ),
     }
+    variant_to_label = {
+        "lm_abstract_chunks": "EMAIL LM ABSTRACT",
+        "lm_summary_chunks": "EMAIL LM SUMMARY",
+        "lm_cleaned_text_chunks": "EMAIL LM CLEANED TEXT",
+        "lm_q_and_a_chunks": "EMAIL LM Q&A",
+        "lm_q_and_a_for_q_only_chunks": "EMAIL LM Q&A FOR Q ONLY",
+    }
+    email_encode_variants = [
+        variant
+        for variant in [
+            "lm_cleaned_text_chunks",
+            "lm_summary_chunks",
+            "lm_q_and_a_chunks",
+            "lm_q_and_a_for_q_only_chunks",
+        ]
+        if variant in ENCODE_VARIANTS
+    ]
+    if not email_encode_variants:
+        print("run_email_knowledge_base_curator_pipeline: no email variants selected to encode")
+        return
 
+    encoders = set(
+        encoder
+        for variant in email_encode_variants
+        for encoder in ENCODE_VARIANTS[variant]["encoders"]
+    )
+    encoder_sizes = {
+        encoder: EMBEDDING_ENCODERS[encoder]["max_recommended_input_size"]
+        for encoder in encoders
+        if (
+            encoder in EMBEDDING_ENCODERS
+            and "max_recommended_input_size" in EMBEDDING_ENCODERS[encoder]
+        )
+    }
+    if not encoder_sizes:
+        print("run_email_knowledge_base_curator_pipeline: no active encoder max_recommended_input_size found")
+        return
+    chunking_encoder_name = min(encoder_sizes, key=encoder_sizes.get)
+    encoder_path = EMBEDDING_ENCODERS[chunking_encoder_name]["model_name"]
+    encoder_tokenizer = AutoTokenizer.from_pretrained(
+        encoder_path,
+        trust_remote_code=True,
+    )
+
+    decoder_path = MODEL_PROFILES[EMAIL_WRITER_PROFILE]["model_name_or_path"]
+    decoder_tokenizer = AutoTokenizer.from_pretrained(
+        decoder_path,
+        trust_remote_code=True,
+    )
+    email_writer_max_input_tokens = MODEL_PROFILES[EMAIL_WRITER_PROFILE]["max_input_tokens"]
+    rag_context_token_budget = int(
+        email_writer_max_input_tokens * EMAIL_WRITER_RAG_CONTEXT_TOKEN_RATIO
+    )
+    rag_chunk_token_budget = max(1, rag_context_token_budget // TOP_K_AFTER_RERANK)
+    encoder_chunk_size = encoder_sizes[chunking_encoder_name]
+    if encoder_chunk_size <= rag_chunk_token_budget:
+        embedding_chunk_size = encoder_chunk_size
+        chunking_tokenizer = encoder_tokenizer
+    else:
+        embedding_chunk_size = rag_chunk_token_budget
+        chunking_tokenizer = decoder_tokenizer
+    embedding_splitter = SentenceSplitter(
+        chunk_size=embedding_chunk_size,
+        chunk_overlap=CHUNK_OVERLAP,
+        tokenizer=lambda text: chunking_tokenizer.encode(
+            text,
+            add_special_tokens=False,
+        ),
+    )
+    write_chunk_records = modal.Function.from_name(
+        STORAGE_HANDLER_APP_NAME,
+        WRITE_CHUNK_RECORDS_FUNCTION_NAME,
+    )
+
+    base_variant_to_records = {}
     variant_to_records = {}
     encode_timestamp = None
     curator_run_data = None
@@ -94,23 +171,23 @@ def run_email_knowledge_base_curator_pipeline(
             STORAGE_HANDLER_APP_NAME,
             READ_JSONL_RECORDS_FUNCTION_NAME,
         )
-        anchor_variant = next(iter(variant_to_reuse_folder_name))
-        anchor_folder_name = variant_to_reuse_folder_name[anchor_variant]
+        anchor_variant = next(iter(base_variant_to_folder_name))
+        anchor_folder_name = base_variant_to_folder_name[anchor_variant]
         anchor_result = read_jsonl_records.remote(
             variant_path=os.path.join(VOLUME_PATH, anchor_folder_name),
             file_start=EMAIL_KNOWLEDGE_BASE_FILE_START,
             timestamp=reuse_timestamp,
         )
         encode_timestamp = anchor_result["timestamp"]
-        variant_to_records[anchor_variant] = anchor_result["records"]
+        base_variant_to_records[anchor_variant] = anchor_result["records"]
 
-        for variant, folder_name in list(variant_to_reuse_folder_name.items())[1:]:
+        for variant, folder_name in list(base_variant_to_folder_name.items())[1:]:
             reuse_result = read_jsonl_records.remote(
                 variant_path=os.path.join(VOLUME_PATH, folder_name),
                 file_start=EMAIL_KNOWLEDGE_BASE_FILE_START,
                 timestamp=encode_timestamp,
             )
-            variant_to_records[variant] = reuse_result["records"]
+            base_variant_to_records[variant] = reuse_result["records"]
 
         print(
             "run_email_knowledge_base_curator_pipeline: reusing stored curator outputs: "
@@ -162,6 +239,7 @@ def run_email_knowledge_base_curator_pipeline(
             run_decoder_latest_tokenizer,
             email_knowledge_base_curator_profile_config,
             prompt_template,
+            UPM_DOMAINS,
             EMAIL_KNOWLEDGE_BASE_MAX_EMAILS,
             EMAIL_KNOWLEDGE_BASE_MAX_THREADS,
             MAX_CONCURRENT_BATCHES,
@@ -189,41 +267,6 @@ def run_email_knowledge_base_curator_pipeline(
             )
             for variant, chunks in curated_thread_chunks_by_variant.items():
                 thread_variant_to_chunks[variant].extend(chunks)
-
-        encoders = set(
-            encoder
-            for _, encoder_data in ENCODE_VARIANTS.items()
-            for encoder in encoder_data["encoders"]
-        )
-        encoder_sizes = {
-            encoder: EMBEDDING_ENCODERS[encoder]["max_recommended_input_size"]
-            for encoder in encoders
-            if (
-                encoder in EMBEDDING_ENCODERS
-                and "max_recommended_input_size" in EMBEDDING_ENCODERS[encoder]
-            )
-        }
-        chunking_encoder_name = min(encoder_sizes, key=encoder_sizes.get)
-        encoder_path = EMBEDDING_ENCODERS[chunking_encoder_name]["model_name"]
-        encoder_tokenizer = AutoTokenizer.from_pretrained(
-            encoder_path,
-            trust_remote_code=True,
-        )
-
-        decoder_path = MODEL_PROFILES[EMAIL_WRITER_PROFILE]["model_name_or_path"]
-        decoder_tokenizer = AutoTokenizer.from_pretrained(
-            decoder_path,
-            trust_remote_code=True,
-        )
-        embedding_chunk_size = encoder_sizes[chunking_encoder_name]
-        embedding_splitter = SentenceSplitter(
-            chunk_size=embedding_chunk_size,
-            chunk_overlap=CHUNK_OVERLAP,
-            tokenizer=lambda text: encoder_tokenizer.encode(
-                text,
-                add_special_tokens=False,
-            ),
-        )
 
         for chunks in thread_variant_to_chunks.values():
             for chunk_index, chunk in enumerate(chunks, start=1):
@@ -256,10 +299,6 @@ def run_email_knowledge_base_curator_pipeline(
                             pair["answer"],
                         )
 
-        write_chunk_records = modal.Function.from_name(
-            STORAGE_HANDLER_APP_NAME,
-            WRITE_CHUNK_RECORDS_FUNCTION_NAME,
-        )
         for (variant, chunks), label in zip(
             thread_variant_to_chunks.items(),
             [
@@ -289,122 +328,130 @@ def run_email_knowledge_base_curator_pipeline(
                 decoder_path,
                 encoder_path,
             )
+            if variant in base_variant_to_folder_name:
+                base_variant_to_records[variant] = chunks
 
-            if variant == "lm_abstract_chunks":
-                continue
+    # prepare encoder-dependent records after either reusing or creating base chunks
+    for variant in ["lm_cleaned_text_chunks", "lm_summary_chunks"]:
+        if variant not in email_encode_variants:
+            continue
+        chunks = base_variant_to_records.get(variant, [])
+        subchunks = []
+        for chunk in chunks:
+            split_texts = embedding_splitter.split_text(chunk["text"].strip())
+            for split_index, split_text in enumerate(split_texts, start=1):
+                subchunks.append({
+                    "thread_id": chunk["thread_id"],
+                    "chunk_index": chunk["chunk_index"],
+                    "subchunk_index": split_index,
+                    "text": split_text,
+                    "decoder_token_count": count_tokens(
+                        decoder_tokenizer,
+                        split_text,
+                    ),
+                    "encoder_token_count": count_tokens(
+                        encoder_tokenizer,
+                        split_text,
+                    ),
+                })
 
-            if variant in ["lm_cleaned_text_chunks", "lm_summary_chunks"]:
-                subchunks = []
-                for chunk in chunks:
-                    split_texts = embedding_splitter.split_text(chunk["text"].strip())
-                    for split_index, split_text in enumerate(split_texts, start=1):
-                        subchunks.append({
-                            "thread_id": chunk["thread_id"],
-                            "chunk_index": chunk["chunk_index"],
-                            "subchunk_index": split_index,
-                            "text": split_text,
-                            "decoder_token_count": count_tokens(
-                                decoder_tokenizer,
-                                split_text,
-                            ),
-                            "encoder_token_count": count_tokens(
-                                encoder_tokenizer,
-                                split_text,
-                            ),
-                        })
+        if not subchunks:
+            continue
 
-                if not subchunks:
-                    continue
+        subchunk_path = os.path.join(
+            VOLUME_PATH,
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
+            f"{variant.removesuffix('_chunks')}_subchunks",
+        )
+        json_path = os.path.join(
+            subchunk_path,
+            f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.jsonl",
+        )
+        txt_path = os.path.join(
+            subchunk_path,
+            f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.txt",
+        )
+        write_chunk_records.remote(
+            subchunks,
+            json_path,
+            txt_path,
+            variant_to_label[variant],
+            decoder_path,
+            encoder_path,
+        )
+        variant_to_records[
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}{variant}"
+        ] = subchunks
 
-                subchunk_path = os.path.join(
-                    VOLUME_PATH,
-                    f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
-                    f"{variant.removesuffix('_chunks')}_subchunks",
+    if (
+        "lm_q_and_a_chunks" in email_encode_variants
+        or "lm_q_and_a_for_q_only_chunks" in email_encode_variants
+    ):
+        chunks = base_variant_to_records.get("lm_q_and_a_chunks", [])
+        valid_q_and_a_chunks = []
+        valid_q_only_chunks = []
+        for chunk in chunks:
+            valid_q_and_a_pairs = []
+            valid_q_only_pairs = []
+            for pair in chunk["pairs"]:
+                q_and_a_text = f"Q: {pair['question']}\nA: {pair['answer']}".strip()
+                q_only_text = pair["question"].strip()
+                q_and_a_token_ids = chunking_tokenizer.encode(
+                    q_and_a_text,
+                    add_special_tokens=False,
                 )
-                json_path = os.path.join(
-                    subchunk_path,
-                    f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.jsonl",
+                q_only_token_ids = chunking_tokenizer.encode(
+                    q_only_text,
+                    add_special_tokens=False,
                 )
-                txt_path = os.path.join(
-                    subchunk_path,
-                    f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.txt",
-                )
-                write_chunk_records.remote(
-                    subchunks,
-                    json_path,
-                    txt_path,
-                    label,
-                    decoder_path,
-                    encoder_path,
-                )
-                variant_to_records[
-                    f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}{variant}"
-                ] = subchunks
-                continue
+                if len(q_and_a_token_ids) <= embedding_chunk_size:
+                    valid_q_and_a_pairs.append(pair)
+                if len(q_only_token_ids) <= embedding_chunk_size:
+                    valid_q_only_pairs.append(pair)
+            if valid_q_and_a_pairs:
+                valid_q_and_a_chunks.append({
+                    "thread_id": chunk["thread_id"],
+                    "chunk_index": chunk["chunk_index"],
+                    "pairs": valid_q_and_a_pairs,
+                })
+            if valid_q_only_pairs:
+                valid_q_only_chunks.append({
+                    "thread_id": chunk["thread_id"],
+                    "chunk_index": chunk["chunk_index"],
+                    "pairs": valid_q_only_pairs,
+                })
 
-            valid_q_and_a_chunks = []
-            valid_q_only_chunks = []
-            for chunk in chunks:
-                valid_q_and_a_pairs = []
-                valid_q_only_pairs = []
-                for pair in chunk["pairs"]:
-                    q_and_a_text = f"Q: {pair['question']}\nA: {pair['answer']}".strip()
-                    q_only_text = pair["question"].strip()
-                    q_and_a_token_ids = encoder_tokenizer.encode(
-                        q_and_a_text,
-                        add_special_tokens=False,
-                    )
-                    q_only_token_ids = encoder_tokenizer.encode(
-                        q_only_text,
-                        add_special_tokens=False,
-                    )
-                    if len(q_and_a_token_ids) <= embedding_chunk_size:
-                        valid_q_and_a_pairs.append(pair)
-                    if len(q_only_token_ids) <= embedding_chunk_size:
-                        valid_q_only_pairs.append(pair)
-                if valid_q_and_a_pairs:
-                    valid_q_and_a_chunks.append({
-                        "thread_id": chunk["thread_id"],
-                        "chunk_index": chunk["chunk_index"],
-                        "pairs": valid_q_and_a_pairs,
-                    })
-                if valid_q_only_pairs:
-                    valid_q_only_chunks.append({
-                        "thread_id": chunk["thread_id"],
-                        "chunk_index": chunk["chunk_index"],
-                        "pairs": valid_q_only_pairs,
-                    })
+        if (
+            "lm_q_and_a_for_q_only_chunks" in email_encode_variants
+            and valid_q_only_chunks
+        ):
+            q_only_valid_path = os.path.join(
+                VOLUME_PATH,
+                f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
+                "lm_q_and_a_for_q_only_valid_chunks",
+            )
+            q_only_json_path = os.path.join(
+                q_only_valid_path,
+                f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.jsonl",
+            )
+            q_only_txt_path = os.path.join(
+                q_only_valid_path,
+                f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.txt",
+            )
+            write_chunk_records.remote(
+                valid_q_only_chunks,
+                q_only_json_path,
+                q_only_txt_path,
+                variant_to_label["lm_q_and_a_for_q_only_chunks"],
+                decoder_path,
+                encoder_path,
+            )
+            variant_to_records[
+                f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
+                "lm_q_and_a_for_q_only_chunks"
+            ] = valid_q_only_chunks
 
-            if valid_q_only_chunks:
-                q_only_valid_path = os.path.join(
-                    VOLUME_PATH,
-                    f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
-                    "lm_q_and_a_for_q_only_valid_chunks",
-                )
-                q_only_json_path = os.path.join(
-                    q_only_valid_path,
-                    f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.jsonl",
-                )
-                q_only_txt_path = os.path.join(
-                    q_only_valid_path,
-                    f"{EMAIL_KNOWLEDGE_BASE_FILE_START}{encode_timestamp}.txt",
-                )
-                write_chunk_records.remote(
-                    valid_q_only_chunks,
-                    q_only_json_path,
-                    q_only_txt_path,
-                    "EMAIL LM Q&A FOR Q ONLY",
-                    decoder_path,
-                    encoder_path,
-                )
-                variant_to_records[
-                    f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}"
-                    "lm_q_and_a_for_q_only_chunks"
-                ] = valid_q_only_chunks
-
-            if not valid_q_and_a_chunks:
-                continue
-
+        if "lm_q_and_a_chunks" in email_encode_variants and valid_q_and_a_chunks:
             q_and_a_valid_path = os.path.join(
                 VOLUME_PATH,
                 f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_valid_chunks",
@@ -421,15 +468,19 @@ def run_email_knowledge_base_curator_pipeline(
                 valid_q_and_a_chunks,
                 json_path,
                 txt_path,
-                label,
+                variant_to_label["lm_q_and_a_chunks"],
                 decoder_path,
                 encoder_path,
             )
             variant_to_records[
-                f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}{variant}"
+                f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}lm_q_and_a_chunks"
             ] = valid_q_and_a_chunks
 
-    # finally, encode each stored variant and write the points into the collections
+    if not variant_to_records:
+        print("run_email_knowledge_base_curator_pipeline: no records selected to encode")
+        return
+
+    # finally, encode each prepared variant and write the points into the collections
     create_collections = modal.Function.from_name(
         COLLECTION_HANDLER_APP_NAME,
         CREATE_COLLECTIONS_FUNCTION_NAME,
@@ -437,6 +488,10 @@ def run_email_knowledge_base_curator_pipeline(
     write_batch_points = modal.Function.from_name(
         COLLECTION_HANDLER_APP_NAME,
         WRITE_BATCH_POINTS_FUNCTION_NAME,
+    )
+    enable_collection_optimizations = modal.Function.from_name(
+        COLLECTION_HANDLER_APP_NAME,
+        ENABLE_COLLECTION_OPTIMIZATIONS_FUNCTION_NAME,
     )
 
     create_collections.remote(
@@ -502,19 +557,33 @@ def run_email_knowledge_base_curator_pipeline(
         embeddings_by_batch = asyncio.run(gather_encoder_embeddings())
         if not ensure_qdrant_server_ready("run_email_knowledge_base_curator_pipeline"):
             return
-        for (variant, batch, upsert_or_update), embeddings in zip(
-            batch_jobs,
-            embeddings_by_batch,
-        ):
-            write_batch_points.remote(
-                variant,
-                batch,
-                encoder_name,
-                embeddings,
-                upsert_or_update,
-            )
+
+        async def gather_write_batch_points():
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_BATCHES)
+
+            async def write_one_batch_with_semaphore(variant, batch, embeddings, upsert_or_update):
+                async with semaphore:
+                    return await write_batch_points.remote.aio(
+                        variant,
+                        batch,
+                        encoder_name,
+                        embeddings,
+                        upsert_or_update,
+                    )
+
+            return await asyncio.gather(*[
+                write_one_batch_with_semaphore(variant, batch, embeddings, upsert_or_update)
+                for (variant, batch, upsert_or_update), embeddings
+                in zip(batch_jobs, embeddings_by_batch)
+            ])
+
+        asyncio.run(gather_write_batch_points())
         if not persist_qdrant_storage("run_email_knowledge_base_curator_pipeline"):
             return
+
+    enable_collection_optimizations.remote(list(variant_to_records.keys()))
+    if not persist_qdrant_storage("run_email_knowledge_base_curator_pipeline"):
+        return
 
     return {
         "encode_timestamp": encode_timestamp,

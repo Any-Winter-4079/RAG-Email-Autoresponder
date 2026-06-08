@@ -21,14 +21,14 @@ app = modal.App(ENCODER_GPU_APP_NAME)
     min_containers=MIN_CONTAINERS,
     volumes={VOLUME_PATH: rag_volume},
 )
-def run_encoder_gpu_batch_embedder(variant, batch, encoder):
-    from helpers.encoder import run_encoder_batch_embedder
+def run_encoder_gpu_batch_document_embedder(variant, batch, encoder):
+    from helpers.encoder import run_encoder_batch_document_embedder
 
-    return run_encoder_batch_embedder(
+    return run_encoder_batch_document_embedder(
         variant=variant,
         batch=batch,
         encoder=encoder,
-        worker_name="run_encoder_gpu_batch_embedder",
+        worker_name="run_encoder_gpu_batch_document_embedder",
     )
 
 @app.function(
@@ -40,15 +40,15 @@ def run_encoder_gpu_batch_embedder(variant, batch, encoder):
     min_containers=MIN_CONTAINERS,
     volumes={VOLUME_PATH: rag_volume},
 )
-def run_encoder_gpu_retriever(query_texts, variant, encoder_name, top_k):
-    from helpers.encoder import run_encoder_retriever
+def run_encoder_gpu_batch_query_embedder_and_qdrant_retriever(query_texts, variant, encoder_name, top_k):
+    from helpers.encoder import run_encoder_batch_query_embedder_and_qdrant_retriever
 
-    return run_encoder_retriever(
+    return run_encoder_batch_query_embedder_and_qdrant_retriever(
         query_texts=query_texts,
         variant=variant,
         encoder_name=encoder_name,
         top_k=top_k,
-        worker_name="run_encoder_gpu_retriever",
+        worker_name="run_encoder_gpu_batch_query_embedder_and_qdrant_retriever",
     )
 
 @app.function(
