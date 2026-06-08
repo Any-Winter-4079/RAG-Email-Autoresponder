@@ -9,9 +9,14 @@ from config.data import (
 from config.eval import (
     DATA_VARIANT_EVAL_SOURCES,
     DATA_VARIANT_TEST_EVAL_VARIANTS,
-    VALID_CONTEXT_EMAILS_MODES,
 )
 from helpers.data import lighten_hex_color
+from helpers.general import (
+    get_context_emails_mode_suffix,
+    get_n_eval_samples_per_folder_uri_suffix,
+    resolve_data_variant_eval_output_path,
+    resolve_dumped_collection_payloads_path,
+)
 
 #######################################
 # Helper 1: Write eval output to file #
@@ -34,7 +39,7 @@ def build_source_query(sample):
 ###################################################
 # Helper 3: Get rerank text from collection point #
 ###################################################
-def get_text_to_rerank_from_payload(payload):
+def get_text_from_payload(payload):
     if "question" in payload and "answer" not in payload:
         return payload["question"]
     if "question" in payload and "answer" in payload:
@@ -53,13 +58,6 @@ def load_selected_split_samples(
     split_samples_path = Path(project_root) / SPLIT_DATASETS_DIR / f"{split_name}.json"
     with open(split_samples_path, "r", encoding="utf-8") as split_samples_file:
         all_split_samples = json.load(split_samples_file)
-
-    if context_emails_mode not in VALID_CONTEXT_EMAILS_MODES:
-        raise ValueError(
-            "load_selected_split_samples: invalid context emails mode:\n"
-            f"\t{context_emails_mode}\n"
-            f"\tvalid modes: {sorted(VALID_CONTEXT_EMAILS_MODES)}"
-        )
 
     if context_emails_mode == "without_context":
         all_split_samples = [
@@ -295,6 +293,7 @@ def save_collection_dump_token_distribution_plot(
         output_path,
         token_type,
         title=None,
+        x_axis_max=None,
         ):
     import matplotlib.pyplot as plt
 
@@ -351,9 +350,13 @@ def save_collection_dump_token_distribution_plot(
             "save_collection_dump_token_distribution_plot: all token-count lists are empty"
         )
 
-    global_max = max(all_token_counts)
-    left_label_pad = max(110, round(global_max * 0.08))
-    x_margin = max(8, round(global_max * 0.07))
+    data_max = max(all_token_counts)
+    if x_axis_max is None:
+        x_axis_max = data_max
+    else:
+        x_axis_max = max(x_axis_max, data_max)
+    left_label_pad = max(110, round(x_axis_max * 0.08))
+    x_margin = max(8, round(x_axis_max * 0.07))
     fig_height = max(4.2, 1.1 * len(base_variants) + 1.9)
     fig, ax = plt.subplots(figsize=(11.8, fig_height))
 
@@ -436,7 +439,7 @@ def save_collection_dump_token_distribution_plot(
             "(box = IQR, whiskers = min/max, diamond = mean)"
         )
 
-    ax.set_xlim(-left_label_pad, global_max + x_margin)
+    ax.set_xlim(-left_label_pad, x_axis_max + x_margin)
     ax.set_yticks(y_base_positions)
     ax.set_yticklabels(base_variants, fontsize=11)
     ax.invert_yaxis()
@@ -458,6 +461,7 @@ def save_query_rewrite_summary_plot(
         n_query_rewriter_exceptions,
         n_empty_query_rewrite_outputs,
         n_no_usable_query_rewrite_outputs,
+        n_no_reranker_query_outputs,
         n_no_request_emails,
         n_rewritten_emails,
         n_duplicate_queries_removed,
@@ -483,11 +487,13 @@ def save_query_rewrite_summary_plot(
         n_query_rewriter_exceptions,
         n_empty_query_rewrite_outputs,
         n_no_usable_query_rewrite_outputs,
+        n_no_reranker_query_outputs,
     ]
     email_labels.extend([
         "rewrite exceptions",
         "empty rewrite outputs",
         "no-usable rewrite outputs",
+        "missing reranker queries",
     ])
     query_labels = [
         "duplicate queries removed",
@@ -503,6 +509,7 @@ def save_query_rewrite_summary_plot(
         n_query_rewriter_exceptions
         + n_empty_query_rewrite_outputs
         + n_no_usable_query_rewrite_outputs
+        + n_no_reranker_query_outputs
     )
     error_rate = 0.0 if not n_emails else n_failed_query_rewrites / n_emails
 
@@ -676,22 +683,25 @@ def attach_split_samples_to_retrieval_output(retrieval_output, rewritten_split_s
             "attach_split_samples_to_retrieval_output: retrieval results do not match rewritten split sample count"
         )
 
+    results_with_samples = []
+    for split_sample, result in zip(rewritten_split_samples, retrieval_output["results"]):
+        result_with_sample = {
+            "query_type_to_rewritten_queries": result["query_type_to_rewritten_queries"],
+            "reranker_query": result["reranker_query"],
+            "sample": split_sample,
+            "retrieval_failed": result["retrieval_failed"],
+        }
+        if "retrieval_results" in result:
+            result_with_sample["retrieval_results"] = result["retrieval_results"]
+        results_with_samples.append(result_with_sample)
+
     return {
         **{
             key: value
             for key, value in retrieval_output.items()
             if key != "results"
         },
-        "results": [
-            {
-                "query_type_to_rewritten_queries": result["query_type_to_rewritten_queries"],
-                "reranker_query": result["reranker_query"],
-                "sample": split_sample,
-                "retrieval_failed": result["retrieval_failed"],
-                "retrieval_results": result["retrieval_results"],
-            }
-            for split_sample, result in zip(rewritten_split_samples, retrieval_output["results"])
-        ],
+        "results": results_with_samples,
     }
 
 ################################################
@@ -703,3 +713,688 @@ def get_n_empty_result_emails(retrieval_output):
         for result in retrieval_output["results"]
         if not result["retrieval_failed"] and not result["retrieval_results"]
     )
+
+############################################
+# Helper 16: Get query rewrite cache paths #
+############################################
+def get_query_rewrite_cache_paths(
+        project_root,
+        query_rewrite_cache_dir,
+        split_name,
+        context_emails_mode,
+        n_eval_samples_per_folder_uri,
+        configured_cache_filename,
+        ):
+    from config.decoder import QUERY_REWRITER_CACHE_TAG
+
+    cache_dir = Path(project_root) / query_rewrite_cache_dir
+    if configured_cache_filename is not None:
+        query_rewrite_cache_path = cache_dir / configured_cache_filename
+        no_requests_cache_path = query_rewrite_cache_path.with_name(
+            f"{query_rewrite_cache_path.stem}_no_requests"
+            f"{query_rewrite_cache_path.suffix}"
+        )
+    else:
+        filter_mode_suffix = get_context_emails_mode_suffix(context_emails_mode)
+        n_eval_samples_suffix = get_n_eval_samples_per_folder_uri_suffix(
+            n_eval_samples_per_folder_uri
+        )
+        query_rewrite_cache_path = (
+            cache_dir
+            / (
+                f"{split_name}{filter_mode_suffix}_"
+                f"{QUERY_REWRITER_CACHE_TAG}{n_eval_samples_suffix}.json"
+            )
+        )
+        no_requests_cache_path = (
+            cache_dir
+            / (
+                f"{split_name}{filter_mode_suffix}_"
+                f"{QUERY_REWRITER_CACHE_TAG}{n_eval_samples_suffix}_no_requests.json"
+            )
+        )
+
+    return query_rewrite_cache_path, no_requests_cache_path
+
+################################################
+# Helper 17: Group query entries by query type #
+################################################
+def group_query_entries_by_query_type(query_entries, reranker_query):
+    query_type_to_rewritten_queries = {}
+    for query_entry in query_entries:
+        query_type = query_entry["query_type"]
+        if query_type not in query_type_to_rewritten_queries:
+            query_type_to_rewritten_queries[query_type] = []
+        query_type_to_rewritten_queries[query_type].append(query_entry["query"])
+
+    if reranker_query:
+        if "reranker" not in query_type_to_rewritten_queries:
+            query_type_to_rewritten_queries["reranker"] = []
+        if reranker_query not in query_type_to_rewritten_queries["reranker"]:
+            query_type_to_rewritten_queries["reranker"].append(reranker_query)
+
+    return query_type_to_rewritten_queries
+
+#######################################################
+# Helper 18: Build rewrite summary from cache entries #
+#######################################################
+def build_rewrite_summary_from_cache_entries(request_entries, no_requests):
+    return {
+        "rewritten_emails": [
+            {
+                "email": build_retrieval_email_from_split_sample(request_entry["sample"]),
+                "query_type_to_rewritten_queries": group_query_entries_by_query_type(
+                    request_entry["queries"],
+                    request_entry["reranker_query"],
+                ),
+                "reranker_query": request_entry["reranker_query"],
+                "anonymized_request": request_entry["anonymized_request"],
+            }
+            for request_entry in request_entries
+        ],
+        "no_request_emails": [
+            build_retrieval_email_from_split_sample(no_request["sample"])
+            for no_request in no_requests
+        ],
+        "n_query_rewriter_exceptions": 0,
+        "n_empty_query_rewrite_outputs": 0,
+        "n_no_usable_query_rewrite_outputs": 0,
+        "n_no_reranker_query_outputs": 0,
+        "n_no_anonymized_request_outputs": 0,
+        "n_duplicate_queries_removed": 0,
+        "n_query_cap_hits": 0,
+        "n_capped_queries_removed": 0,
+    }
+
+################################################
+# Helper 19: Build query rewrite cache entries #
+################################################
+def build_query_rewrite_cache_entries(rewrite_summary, retrieval_emails, split_samples):
+    request_split_samples = select_split_samples_for_retrieval_emails(
+        target_retrieval_emails=[
+            rewritten_email["email"]
+            for rewritten_email in rewrite_summary["rewritten_emails"]
+        ],
+        retrieval_emails=retrieval_emails,
+        split_samples=split_samples,
+    )
+    no_request_split_samples = select_split_samples_for_retrieval_emails(
+        target_retrieval_emails=rewrite_summary["no_request_emails"],
+        retrieval_emails=retrieval_emails,
+        split_samples=split_samples,
+    )
+
+    request_entries = []
+    for split_sample, rewritten_email in zip(
+            request_split_samples,
+            rewrite_summary["rewritten_emails"]):
+        request_entries.append({
+            "sample": split_sample,
+            "queries": [
+                {
+                    "query": query,
+                    "query_type": query_type,
+                }
+                for query_type, queries in (
+                    rewritten_email["query_type_to_rewritten_queries"].items()
+                )
+                for query in queries
+            ],
+            "reranker_query": rewritten_email["reranker_query"],
+            "anonymized_request": rewritten_email["anonymized_request"],
+        })
+    no_requests = [
+        {"sample": split_sample}
+        for split_sample in no_request_split_samples
+    ]
+
+    return request_entries, no_requests
+
+################################################
+# Helper 20: Load or create query rewrite data #
+################################################
+def load_or_create_query_rewrite_data(
+        project_root,
+        query_rewrite_cache_dir,
+        split_name,
+        context_emails_mode,
+        n_eval_samples_per_folder_uri,
+        configured_cache_filename=None,
+        max_query_rewrite_failure_rate=None,
+        log_prefix="run_data_variant_eval",
+        ):
+    import asyncio
+
+    from helpers.retrieval_pipeline import rewrite_emails_async
+
+    query_rewrite_cache_path, no_requests_cache_path = get_query_rewrite_cache_paths(
+        project_root=project_root,
+        query_rewrite_cache_dir=query_rewrite_cache_dir,
+        split_name=split_name,
+        context_emails_mode=context_emails_mode,
+        n_eval_samples_per_folder_uri=n_eval_samples_per_folder_uri,
+        configured_cache_filename=configured_cache_filename,
+    )
+    split_samples, folder_uri_to_n_split_samples = load_selected_split_samples(
+        project_root=project_root,
+        split_name=split_name,
+        context_emails_mode=context_emails_mode,
+        n_eval_samples_per_folder_uri=n_eval_samples_per_folder_uri,
+    )
+    can_load_cache = False
+    if query_rewrite_cache_path.exists() and no_requests_cache_path.exists():
+        with open(query_rewrite_cache_path, "r", encoding="utf-8") as query_rewrite_cache_file:
+            request_entries = json.load(query_rewrite_cache_file)
+        with open(no_requests_cache_path, "r", encoding="utf-8") as no_requests_cache_file:
+            no_requests = json.load(no_requests_cache_file)
+        can_load_cache = all(
+            isinstance(request_entry.get("anonymized_request"), str)
+            and request_entry["anonymized_request"].strip()
+            for request_entry in request_entries
+        )
+
+    if can_load_cache:
+        rewrite_summary = build_rewrite_summary_from_cache_entries(
+            request_entries=request_entries,
+            no_requests=no_requests,
+        )
+        did_create_cache = False
+    else:
+        retrieval_emails = [
+            build_retrieval_email_from_split_sample(split_sample)
+            for split_sample in split_samples
+        ]
+        rewrite_summary = asyncio.run(
+            rewrite_emails_async(
+                emails=retrieval_emails,
+                log_prefix=log_prefix,
+            )
+        )
+        n_query_rewrite_failures = (
+            rewrite_summary["n_query_rewriter_exceptions"]
+            + rewrite_summary["n_empty_query_rewrite_outputs"]
+            + rewrite_summary["n_no_usable_query_rewrite_outputs"]
+            + rewrite_summary["n_no_reranker_query_outputs"]
+            + rewrite_summary["n_no_anonymized_request_outputs"]
+        )
+        query_rewrite_failure_rate = (
+            0.0 if not retrieval_emails else n_query_rewrite_failures / len(retrieval_emails)
+        )
+        if (
+                max_query_rewrite_failure_rate is not None
+                and query_rewrite_failure_rate > max_query_rewrite_failure_rate):
+            raise RuntimeError(
+                f"{log_prefix}: query rewrite failure rate exceeded threshold:\n"
+                f"\tfailure rate: {query_rewrite_failure_rate:.2%}\n"
+                f"\tmax failure rate: {max_query_rewrite_failure_rate:.2%}"
+            )
+
+        request_entries, no_requests = build_query_rewrite_cache_entries(
+            rewrite_summary=rewrite_summary,
+            retrieval_emails=retrieval_emails,
+            split_samples=split_samples,
+        )
+        query_rewrite_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(query_rewrite_cache_path, "w", encoding="utf-8") as query_rewrite_cache_file:
+            json.dump(request_entries, query_rewrite_cache_file, ensure_ascii=False, indent=2)
+        with open(no_requests_cache_path, "w", encoding="utf-8") as no_requests_cache_file:
+            json.dump(no_requests, no_requests_cache_file, ensure_ascii=False, indent=2)
+        did_create_cache = True
+
+    return {
+        "split_samples": split_samples,
+        "folder_uri_to_n_split_samples": folder_uri_to_n_split_samples,
+        "request_entries": request_entries,
+        "no_requests": no_requests,
+        "rewrite_summary": rewrite_summary,
+        "rewritten_split_samples": [
+            request_entry["sample"]
+            for request_entry in request_entries
+        ],
+        "query_rewrite_cache_path": query_rewrite_cache_path,
+        "no_requests_cache_path": no_requests_cache_path,
+        "did_create_cache": did_create_cache,
+    }
+
+#########################################
+# Helper 21: Load query-rewrite entries #
+#########################################
+def load_query_rewrite_entries(
+        project_root,
+        query_rewrite_cache_dir,
+        split_name,
+        context_emails_mode,
+        n_eval_samples_per_folder_uri,
+        configured_cache_filename,
+        max_samples,
+        ):
+    query_rewrite_data = load_or_create_query_rewrite_data(
+        project_root=project_root,
+        query_rewrite_cache_dir=query_rewrite_cache_dir,
+        split_name=split_name,
+        context_emails_mode=context_emails_mode,
+        n_eval_samples_per_folder_uri=n_eval_samples_per_folder_uri,
+        configured_cache_filename=configured_cache_filename,
+        log_prefix="load_query_rewrite_entries",
+    )
+    request_entries = query_rewrite_data["request_entries"]
+
+    if max_samples is not None:
+        request_entries = request_entries[:max_samples]
+
+    return request_entries, query_rewrite_data["query_rewrite_cache_path"]
+
+#####################################################
+# Helper 22: Build oracle chunks from dumped points #
+#####################################################
+def build_oracle_chunks_from_dumped_points(dumped_points, source_name, collection_name):
+    chunks = []
+    id_to_chunk = {}
+    for dumped_point in dumped_points:
+        chunk_id = f"{source_name}_{dumped_point['id']}"
+        chunks.append({
+            "id": chunk_id,
+            "text": get_text_from_payload(
+                dumped_point["payload"]
+            ).strip(),
+        })
+        id_to_chunk[chunk_id] = {
+            **dumped_point,
+            "id": chunk_id,
+            "raw_id": dumped_point["id"],
+            "source_name": source_name,
+            "collection_name": collection_name,
+        }
+
+    return chunks, id_to_chunk
+
+############################################
+# Helper 23: Load corpus oracle input data #
+############################################
+def load_corpus_oracle_inputs(
+        project_root,
+        query_rewrite_cache_dir,
+        split_name,
+        context_emails_mode,
+        n_eval_samples_per_folder_uri,
+        configured_cache_filename,
+        max_samples,
+        data_variant,
+        data_sources,
+        dump_script_name,
+        dump_timestamp,
+        ):
+    request_entries, query_rewrite_cache_path = load_query_rewrite_entries(
+        project_root=project_root,
+        query_rewrite_cache_dir=query_rewrite_cache_dir,
+        split_name=split_name,
+        context_emails_mode=context_emails_mode,
+        n_eval_samples_per_folder_uri=n_eval_samples_per_folder_uri,
+        configured_cache_filename=configured_cache_filename,
+        max_samples=max_samples,
+    )
+    collection_names = []
+    collection_dump_paths = []
+    chunks = []
+    id_to_chunk = {}
+    for data_source in data_sources:
+        collection_name = (
+            f"{EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX}{data_variant}"
+            if (
+                data_source == "email"
+                and
+                not data_variant.startswith(EMAIL_KNOWLEDGE_BASE_VARIANT_PREFIX)
+            )
+            else data_variant
+        )
+        collection_dump_path = resolve_dumped_collection_payloads_path(
+            project_root=project_root,
+            collection_name=collection_name,
+            dump_script_name=dump_script_name,
+            dump_timestamp=dump_timestamp,
+            output_name="dump",
+        )
+        with open(collection_dump_path, "r", encoding="utf-8") as collection_dump_file:
+            dumped_points = json.load(collection_dump_file)
+
+        source_chunks, source_id_to_chunk = build_oracle_chunks_from_dumped_points(
+            dumped_points=dumped_points,
+            source_name=data_source,
+            collection_name=collection_name,
+        )
+        collection_names.append(collection_name)
+        collection_dump_paths.append(collection_dump_path)
+        chunks.extend(source_chunks)
+        id_to_chunk.update(source_id_to_chunk)
+
+    oracle_entries = []
+    for request_entry in request_entries:
+        reranker_query = request_entry["reranker_query"]
+        anonymized_request = request_entry["anonymized_request"]
+        if not anonymized_request or not chunks:
+            continue
+        oracle_entries.append({
+            "sample": request_entry["sample"],
+            "reranker_query": reranker_query,
+            "anonymized_request": anonymized_request,
+            "chunks": chunks,
+            "id_to_chunk": id_to_chunk,
+        })
+
+    return oracle_entries, {
+        "query_rewrite_cache_path": query_rewrite_cache_path,
+        "data_sources": data_sources,
+        "collection_names": collection_names,
+        "collection_dump_paths": collection_dump_paths,
+        "collection_dump_timestamps": [
+            collection_dump_path.parent.parent.name
+            for collection_dump_path in collection_dump_paths
+        ],
+        "n_corpus_chunks": len(chunks),
+    }
+
+#######################################
+# Helper 24: Load retrieval eval data #
+#######################################
+def load_retrieval_eval_output(
+        project_root,
+        split_name,
+        data_variant,
+        source_name,
+        output_name,
+        timestamp,
+        ):
+    retrieval_output_path = resolve_data_variant_eval_output_path(
+        project_root=project_root,
+        split_name=split_name,
+        variant=data_variant,
+        source_name=source_name,
+        output_name=output_name,
+        timestamp=timestamp,
+    )
+    with open(retrieval_output_path, "r", encoding="utf-8") as retrieval_output_file:
+        retrieval_output = json.load(retrieval_output_file)
+
+    return retrieval_output, retrieval_output_path
+
+########################################################
+# Helper 25: Build oracle chunks from retrieval result #
+########################################################
+def build_oracle_chunks_from_retrieval_results(
+        retrieval_results,
+        source_name,
+        retrieval_output_name=None,
+        top_k=None,
+        ):
+    if top_k is not None:
+        retrieval_results = retrieval_results[:top_k]
+    chunks = []
+    id_to_chunk = {}
+    for retrieval_result_index, retrieval_result in enumerate(retrieval_results):
+        chunk_source_name = retrieval_result.get("source", source_name)
+        chunk_id_source = (
+            f"{chunk_source_name}_{retrieval_output_name}"
+            if retrieval_output_name is not None
+            else chunk_source_name
+        )
+        chunk_id = f"{chunk_id_source}_{retrieval_result_index}"
+        chunks.append({
+            "id": chunk_id,
+            "text": get_text_from_payload(
+                retrieval_result["payload"]
+            ).strip(),
+        })
+        id_to_chunk[chunk_id] = {
+            "id": chunk_id,
+            "source_name": chunk_source_name,
+            "retrieval_result": retrieval_result,
+        }
+
+    return chunks, id_to_chunk
+
+###############################################
+# Helper 26: Load retrieval oracle input data #
+###############################################
+def load_retrieval_oracle_inputs(
+        project_root,
+        split_name,
+        data_variant,
+        data_sources,
+        retrieval_output_names,
+        retrieval_timestamp,
+        max_samples,
+        top_k_per_retrieval_output,
+        ):
+    def load_single_retrieval_oracle_inputs(retrieval_output_name):
+        if retrieval_output_name == "reranker":
+            retrieval_output, retrieval_output_path = load_retrieval_eval_output(
+                project_root=project_root,
+                split_name=split_name,
+                data_variant=data_variant,
+                source_name=None,
+                output_name=retrieval_output_name,
+                timestamp=retrieval_timestamp,
+            )
+
+            retrieval_results = retrieval_output["results"]
+            if max_samples is not None:
+                retrieval_results = retrieval_results[:max_samples]
+
+            oracle_entries = []
+            for result_entry in retrieval_results:
+                reranker_query = result_entry["reranker_query"]
+                if result_entry["retrieval_failed"]:
+                    continue
+                chunks, id_to_chunk = build_oracle_chunks_from_retrieval_results(
+                    retrieval_results=result_entry["retrieval_results"],
+                    source_name=retrieval_output_name,
+                    top_k=top_k_per_retrieval_output,
+                )
+                if not reranker_query or not chunks:
+                    continue
+                oracle_entries.append({
+                    "sample": result_entry["sample"],
+                    "reranker_query": reranker_query,
+                    "chunks": chunks,
+                    "id_to_chunk": id_to_chunk,
+                })
+
+            return oracle_entries, {
+                "data_sources": data_sources,
+                "retrieval_output_names": [retrieval_output_name],
+                "retrieval_output_paths": [retrieval_output_path],
+            }
+
+        source_outputs = []
+        retrieval_output_paths = []
+        for data_source in data_sources:
+            retrieval_output, retrieval_output_path = load_retrieval_eval_output(
+                project_root=project_root,
+                split_name=split_name,
+                data_variant=data_variant,
+                source_name=data_source,
+                output_name=retrieval_output_name,
+                timestamp=retrieval_timestamp,
+            )
+            source_outputs.append((data_source, retrieval_output))
+            retrieval_output_paths.append(retrieval_output_path)
+
+        first_source_results = source_outputs[0][1]["results"]
+        if max_samples is not None:
+            first_source_results = first_source_results[:max_samples]
+
+        oracle_entries = []
+        for result_index, first_result_entry in enumerate(first_source_results):
+            reranker_query = first_result_entry["reranker_query"]
+            chunks = []
+            id_to_chunk = {}
+            for source_name, retrieval_output in source_outputs:
+                result_entry = retrieval_output["results"][result_index]
+                if result_entry["retrieval_failed"]:
+                    continue
+                source_chunks, source_id_to_chunk = build_oracle_chunks_from_retrieval_results(
+                    retrieval_results=result_entry["retrieval_results"],
+                    source_name=source_name,
+                    top_k=top_k_per_retrieval_output,
+                )
+                chunks.extend(source_chunks)
+                id_to_chunk.update(source_id_to_chunk)
+
+            if not reranker_query or not chunks:
+                continue
+            oracle_entries.append({
+                "sample": first_result_entry["sample"],
+                "reranker_query": reranker_query,
+                "chunks": chunks,
+                "id_to_chunk": id_to_chunk,
+            })
+
+        return oracle_entries, {
+            "data_sources": data_sources,
+            "retrieval_output_names": [retrieval_output_name],
+            "retrieval_output_paths": retrieval_output_paths,
+        }
+
+    if len(retrieval_output_names) == 1:
+        return load_single_retrieval_oracle_inputs(retrieval_output_names[0])
+
+    retrieval_outputs = []
+    retrieval_output_paths = []
+    for retrieval_output_name in retrieval_output_names:
+        if retrieval_output_name == "reranker":
+            retrieval_output, retrieval_output_path = load_retrieval_eval_output(
+                project_root=project_root,
+                split_name=split_name,
+                data_variant=data_variant,
+                source_name=None,
+                output_name=retrieval_output_name,
+                timestamp=retrieval_timestamp,
+            )
+            retrieval_outputs.append((retrieval_output_name, None, retrieval_output))
+            retrieval_output_paths.append(retrieval_output_path)
+            continue
+        for data_source in data_sources:
+            retrieval_output, retrieval_output_path = load_retrieval_eval_output(
+                project_root=project_root,
+                split_name=split_name,
+                data_variant=data_variant,
+                source_name=data_source,
+                output_name=retrieval_output_name,
+                timestamp=retrieval_timestamp,
+            )
+            retrieval_outputs.append((retrieval_output_name, data_source, retrieval_output))
+            retrieval_output_paths.append(retrieval_output_path)
+
+    first_retrieval_results = retrieval_outputs[0][2]["results"]
+    if max_samples is not None:
+        first_retrieval_results = first_retrieval_results[:max_samples]
+
+    oracle_entries = []
+    for result_index, first_result_entry in enumerate(first_retrieval_results):
+        reranker_query = first_result_entry["reranker_query"]
+        chunks = []
+        id_to_chunk = {}
+        chunk_text_to_chunk_id = {}
+        for retrieval_output_name, data_source, retrieval_output in retrieval_outputs:
+            result_entry = retrieval_output["results"][result_index]
+            if result_entry["retrieval_failed"]:
+                continue
+            source_name = data_source or retrieval_output_name
+            source_chunks, source_id_to_chunk = build_oracle_chunks_from_retrieval_results(
+                retrieval_results=result_entry["retrieval_results"],
+                source_name=source_name,
+                retrieval_output_name=retrieval_output_name,
+                top_k=top_k_per_retrieval_output,
+            )
+            for source_chunk in source_chunks:
+                chunk_text = source_chunk["text"]
+                origin_chunk = source_id_to_chunk[source_chunk["id"]]
+                if chunk_text in chunk_text_to_chunk_id:
+                    original_chunk_id = chunk_text_to_chunk_id[chunk_text]
+                    id_to_chunk[original_chunk_id]["retrieval_origins"].append(origin_chunk)
+                    continue
+                chunk_text_to_chunk_id[chunk_text] = source_chunk["id"]
+                chunks.append(source_chunk)
+                id_to_chunk[source_chunk["id"]] = {
+                    **origin_chunk,
+                    "retrieval_origins": [origin_chunk],
+                }
+
+        if not reranker_query or not chunks:
+            continue
+        oracle_entries.append({
+            "sample": first_result_entry["sample"],
+            "reranker_query": reranker_query,
+            "chunks": chunks,
+            "id_to_chunk": id_to_chunk,
+        })
+
+    return oracle_entries, {
+        "data_sources": data_sources,
+        "retrieval_output_names": retrieval_output_names,
+        "retrieval_output_paths": retrieval_output_paths,
+    }
+
+#####################################
+# Helper 27: Load oracle input data #
+#####################################
+def load_oracle_inputs(
+        input_mode,
+        project_root,
+        query_rewrite_cache_dir,
+        split_name,
+        context_emails_mode,
+        n_eval_samples_per_folder_uri,
+        configured_cache_filename,
+        max_samples,
+        data_variant,
+        dump_script_name,
+        dump_timestamp,
+        data_sources,
+        retrieval_output_names,
+        retrieval_timestamp,
+        top_k_per_retrieval_output,
+        ):
+    if input_mode == "corpus":
+        return load_corpus_oracle_inputs(
+            project_root=project_root,
+            query_rewrite_cache_dir=query_rewrite_cache_dir,
+            split_name=split_name,
+            context_emails_mode=context_emails_mode,
+            n_eval_samples_per_folder_uri=n_eval_samples_per_folder_uri,
+            configured_cache_filename=configured_cache_filename,
+            max_samples=max_samples,
+            data_variant=data_variant,
+            data_sources=data_sources,
+            dump_script_name=dump_script_name,
+            dump_timestamp=dump_timestamp,
+        )
+    if input_mode == "retrieval":
+        return load_retrieval_oracle_inputs(
+            project_root=project_root,
+            split_name=split_name,
+            data_variant=data_variant,
+            data_sources=data_sources,
+            retrieval_output_names=retrieval_output_names,
+            retrieval_timestamp=retrieval_timestamp,
+            max_samples=max_samples,
+            top_k_per_retrieval_output=top_k_per_retrieval_output,
+        )
+    raise KeyError(input_mode)
+
+##################################################################
+# Helper 28: Attach selected chunks to discriminator result data #
+##################################################################
+def attach_selected_chunks_to_discriminator_result(discriminator_result, id_to_chunk):
+    subqueries = discriminator_result.get("subqueries") or []
+    for subquery in subqueries:
+        supporting_chunk_ids = subquery.get("supporting_chunk_ids") or []
+        insufficient_chunk_ids = subquery.get("insufficient_chunk_ids") or []
+        subquery["supporting_chunks"] = [
+            id_to_chunk.get(str(chunk_id), {"id": str(chunk_id), "payload": None})
+            for chunk_id in supporting_chunk_ids
+        ]
+        subquery["insufficient_chunks"] = [
+            id_to_chunk.get(str(chunk_id), {"id": str(chunk_id), "payload": None})
+            for chunk_id in insufficient_chunk_ids
+        ]

@@ -252,6 +252,8 @@ def extract_query_rewriter_content(
         question_queries_closing_tag,
         reranker_query_opening_tag,
         reranker_query_closing_tag,
+        anonymized_request_opening_tag,
+        anonymized_request_closing_tag,
         query_opening_tag,
         query_closing_tag,
         no_request_opening_tag,
@@ -271,6 +273,7 @@ def extract_query_rewriter_content(
             "hyde_queries": [],
             "question_queries": [],
             "reranker_query": None,
+            "anonymized_request": None,
         }
 
     # extract keyword queries, natural queries, hyde queries, question queries, reranker query
@@ -309,6 +312,17 @@ def extract_query_rewriter_content(
     else:
         reranker_query = None
 
+    anonymized_requests = extract_matched_content(
+        response,
+        anonymized_request_opening_tag,
+        anonymized_request_closing_tag,
+    )
+    if anonymized_requests:
+        # there should be a single anonymized request per response
+        anonymized_request = anonymized_requests[0]
+    else:
+        anonymized_request = None
+
     return {
         "no_request": False,
         "keyword_queries": keyword_queries,
@@ -316,6 +330,7 @@ def extract_query_rewriter_content(
         "hyde_queries": hyde_queries,
         "question_queries": question_queries,
         "reranker_query": reranker_query,
+        "anonymized_request": anonymized_request,
     }
 
 ##########################################
@@ -583,6 +598,8 @@ def run_local_lm_or_vlm(
         QUESTION_QUERIES_CLOSING_TAG,
         RERANKER_QUERY_OPENING_TAG,
         RERANKER_QUERY_CLOSING_TAG,
+        ANONYMIZED_REQUEST_OPENING_TAG,
+        ANONYMIZED_REQUEST_CLOSING_TAG,
         NO_REQUEST_OPENING_TAG,
         NO_REQUEST_CLOSING_TAG,
         NO_USEFUL_INFORMATION_OPENING_TAG,
@@ -818,6 +835,8 @@ def run_local_lm_or_vlm(
             QUESTION_QUERIES_CLOSING_TAG,
             RERANKER_QUERY_OPENING_TAG,
             RERANKER_QUERY_CLOSING_TAG,
+            ANONYMIZED_REQUEST_OPENING_TAG,
+            ANONYMIZED_REQUEST_CLOSING_TAG,
             QUERY_OPENING_TAG,
             QUERY_CLOSING_TAG,
             NO_REQUEST_OPENING_TAG,

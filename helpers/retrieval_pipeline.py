@@ -7,12 +7,12 @@ import modal
 from config.encoder import EMBEDDING_ENCODERS
 from config.modal_apps import ENCODER_CPU_APP_NAME, ENCODER_GPU_APP_NAME
 from config.modal_functions import (
-    RUN_ENCODER_CPU_RETRIEVER_FUNCTION_NAME,
-    RUN_ENCODER_GPU_RETRIEVER_FUNCTION_NAME,
+    RUN_ENCODER_CPU_BATCH_QUERY_EMBEDDER_AND_QDRANT_RETRIEVER_FUNCTION_NAME,
+    RUN_ENCODER_GPU_BATCH_QUERY_EMBEDDER_AND_QDRANT_RETRIEVER_FUNCTION_NAME,
     RUN_ENCODER_GPU_RERANKER_FUNCTION_NAME,
 )
 from helpers.data import format_email_prompt_block
-from helpers.eval import get_text_to_rerank_from_payload
+from helpers.eval import get_text_from_payload
 
 #########################################
 # Helper 1: Load query rewriter runtime #
@@ -38,20 +38,20 @@ def load_query_rewriter_runtime():
         "query_rewriter_prompt_template": query_rewriter_prompt_template,
     }
 
-###################################
-# Helper 2: Get encoder retriever #
-###################################
-def get_run_encoder_retriever(encoder_name):
+######################################################################
+# Helper 2: Get encoder query embedder and Qdrant retriever function #
+######################################################################
+def get_run_encoder_batch_query_embedder_and_qdrant_retriever(encoder_name):
     service_name = EMBEDDING_ENCODERS[encoder_name]["service"]
     if service_name == ENCODER_GPU_APP_NAME:
         return modal.Function.from_name(
             ENCODER_GPU_APP_NAME,
-            RUN_ENCODER_GPU_RETRIEVER_FUNCTION_NAME,
+            RUN_ENCODER_GPU_BATCH_QUERY_EMBEDDER_AND_QDRANT_RETRIEVER_FUNCTION_NAME,
         )
     if service_name == ENCODER_CPU_APP_NAME:
         return modal.Function.from_name(
             ENCODER_CPU_APP_NAME,
-            RUN_ENCODER_CPU_RETRIEVER_FUNCTION_NAME,
+            RUN_ENCODER_CPU_BATCH_QUERY_EMBEDDER_AND_QDRANT_RETRIEVER_FUNCTION_NAME,
         )
     raise ValueError(f"unsupported service '{service_name}' for encoder '{encoder_name}'")
 
@@ -149,9 +149,12 @@ def post_process_query_rewriter_output(
         "no_request": False,
         "query_type_to_rewritten_queries": None,
         "reranker_query": None,
+        "anonymized_request": None,
         "did_raise_exception": False,
         "did_return_empty_output": False,
         "did_return_no_usable_queries": False,
+        "did_return_no_reranker_query": False,
+        "did_return_no_anonymized_request": False,
         "n_duplicate_queries_removed": 0,
         "did_hit_query_cap": False,
         "n_capped_queries_removed": 0,
@@ -165,26 +168,37 @@ def post_process_query_rewriter_output(
     elif query_rewriter_output["no_request"]:
         rewrite_result["no_request"] = True
     else:
+        reranker_query = query_rewriter_output.get("reranker_query", None)
+        anonymized_request = query_rewriter_output.get("anonymized_request", None)
         query_type_to_rewritten_queries = {
             query_type: query_rewriter_output[f"{query_type}_queries"]
             for query_type in QUERY_TYPE_TO_N_MAX_QUERIES
         }
-        if not any(query_type_to_rewritten_queries.values()):
-            print(f"{log_prefix}: query rewrite returned no usable queries")
-            rewrite_result["did_return_no_usable_queries"] = True
+        if not reranker_query:
+            print(f"{log_prefix}: query rewrite returned no reranker query")
+            rewrite_result["did_return_no_reranker_query"] = True
+        elif not anonymized_request:
+            print(f"{log_prefix}: query rewrite returned no anonymized request")
+            rewrite_result["did_return_no_anonymized_request"] = True
         else:
-            deduped_query_type_to_rewritten_queries, n_duplicate_queries_removed = dedupe_query_type_to_rewritten_queries(
-                query_type_to_rewritten_queries=query_type_to_rewritten_queries,
-            )
-            query_type_to_rewritten_queries, n_capped_queries_removed = cap_query_type_to_rewritten_queries(
-                query_type_to_rewritten_queries=deduped_query_type_to_rewritten_queries,
-                n_max_queries=n_max_queries,
-            )
-            rewrite_result["query_type_to_rewritten_queries"] = query_type_to_rewritten_queries
-            rewrite_result["reranker_query"] = query_rewriter_output.get("reranker_query", None)
-            rewrite_result["n_duplicate_queries_removed"] = n_duplicate_queries_removed
-            rewrite_result["did_hit_query_cap"] = n_capped_queries_removed > 0
-            rewrite_result["n_capped_queries_removed"] = n_capped_queries_removed
+            query_type_to_rewritten_queries["reranker"] = [reranker_query]
+            if not any(query_type_to_rewritten_queries.values()):
+                print(f"{log_prefix}: query rewrite returned no usable queries")
+                rewrite_result["did_return_no_usable_queries"] = True
+            else:
+                deduped_query_type_to_rewritten_queries, n_duplicate_queries_removed = dedupe_query_type_to_rewritten_queries(
+                    query_type_to_rewritten_queries=query_type_to_rewritten_queries,
+                )
+                query_type_to_rewritten_queries, n_capped_queries_removed = cap_query_type_to_rewritten_queries(
+                    query_type_to_rewritten_queries=deduped_query_type_to_rewritten_queries,
+                    n_max_queries=n_max_queries,
+                )
+                rewrite_result["query_type_to_rewritten_queries"] = query_type_to_rewritten_queries
+                rewrite_result["reranker_query"] = reranker_query
+                rewrite_result["anonymized_request"] = anonymized_request
+                rewrite_result["n_duplicate_queries_removed"] = n_duplicate_queries_removed
+                rewrite_result["did_hit_query_cap"] = n_capped_queries_removed > 0
+                rewrite_result["n_capped_queries_removed"] = n_capped_queries_removed
 
     return rewrite_result
 
@@ -238,7 +252,7 @@ async def rewrite_emails_async(
     from config.decoder import MAX_CONCURRENT_BATCHES, QUERY_TYPE_TO_N_MAX_QUERIES
 
     if n_max_queries is None:
-        n_max_queries = sum(QUERY_TYPE_TO_N_MAX_QUERIES.values())
+        n_max_queries = sum(QUERY_TYPE_TO_N_MAX_QUERIES.values()) + 1
 
     query_rewriter_runtime = load_query_rewriter_runtime()
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_BATCHES)
@@ -262,6 +276,8 @@ async def rewrite_emails_async(
     n_query_rewriter_exceptions = 0
     n_empty_query_rewrite_outputs = 0
     n_no_usable_query_rewrite_outputs = 0
+    n_no_reranker_query_outputs = 0
+    n_no_anonymized_request_outputs = 0
     n_duplicate_queries_removed = 0
     n_query_cap_hits = 0
     n_capped_queries_removed = 0
@@ -275,6 +291,12 @@ async def rewrite_emails_async(
         if rewrite_result["did_return_no_usable_queries"]:
             n_no_usable_query_rewrite_outputs += 1
             continue
+        if rewrite_result["did_return_no_reranker_query"]:
+            n_no_reranker_query_outputs += 1
+            continue
+        if rewrite_result["did_return_no_anonymized_request"]:
+            n_no_anonymized_request_outputs += 1
+            continue
         if rewrite_result["no_request"]:
             no_request_emails.append(email)
             continue
@@ -285,6 +307,7 @@ async def rewrite_emails_async(
             "email": email,
             "query_type_to_rewritten_queries": rewrite_result["query_type_to_rewritten_queries"],
             "reranker_query": rewrite_result["reranker_query"],
+            "anonymized_request": rewrite_result["anonymized_request"],
         })
 
     return {
@@ -293,6 +316,8 @@ async def rewrite_emails_async(
         "n_query_rewriter_exceptions": n_query_rewriter_exceptions,
         "n_empty_query_rewrite_outputs": n_empty_query_rewrite_outputs,
         "n_no_usable_query_rewrite_outputs": n_no_usable_query_rewrite_outputs,
+        "n_no_reranker_query_outputs": n_no_reranker_query_outputs,
+        "n_no_anonymized_request_outputs": n_no_anonymized_request_outputs,
         "n_duplicate_queries_removed": n_duplicate_queries_removed,
         "n_query_cap_hits": n_query_cap_hits,
         "n_capped_queries_removed": n_capped_queries_removed,
@@ -304,16 +329,12 @@ async def rewrite_emails_async(
 def build_retrieval_query_batches_for_one_email(
         rewritten_email,
         retrieval_batch_size,
-        force_source_query,
         ):
-    retrieval_queries = (
-        [{"query": build_source_query_from_email(rewritten_email["email"]), "query_type": "original_email"}]
-        if force_source_query else [
-            {"query": query, "query_type": query_type}
-            for query_type, queries in rewritten_email["query_type_to_rewritten_queries"].items()
-            for query in queries
-        ]
-    )
+    retrieval_queries = [
+        {"query": query, "query_type": query_type}
+        for query_type, queries in rewritten_email["query_type_to_rewritten_queries"].items()
+        for query in queries
+    ]
     retrieval_query_batches = []
     for query_start_index in range(0, len(retrieval_queries), retrieval_batch_size):
         typed_queries = retrieval_queries[query_start_index:query_start_index + retrieval_batch_size]
@@ -338,111 +359,196 @@ def run_single_encoder_retrieval(
         encoder_runtime_config,
         top_k_per_query,
         top_k_after_query_fusion,
+        use_max_similarity_query_fusion_before_rrf,
         result_record_metadata,
         ):
-    from config.eval import DATA_VARIANTS_TO_FORCE_EMAIL_AS_QUERY
-
-    run_encoder_retriever = get_run_encoder_retriever(encoder_name)
-    force_source_query = base_data_variant in DATA_VARIANTS_TO_FORCE_EMAIL_AS_QUERY
-    encoder_output = {
-        **result_record_metadata,
-        "base_data_variant": base_data_variant,
-        "data_source": source_name,
-        "data_variant": collection_name,
-        "encoder_name": encoder_name,
-        "top_k": top_k_after_query_fusion,
-        "first_batch_embed_seconds": None,
-        "first_batch_query_seconds": None,
-        "n_failed_emails": 0,
-        "results": [],
+    from config.decoder import MAX_CONCURRENT_BATCHES
+    run_encoder_query_retriever = get_run_encoder_batch_query_embedder_and_qdrant_retriever(encoder_name)
+    embedding_kinds = EMBEDDING_ENCODERS[encoder_name]["embedding_kinds"]
+    embedding_kind_to_output_name = {
+        embedding_kind: (
+            encoder_name
+            if len(embedding_kinds) == 1
+            else f"{encoder_name}_{embedding_kind}"
+        )
+        for embedding_kind in embedding_kinds
+    }
+    encoder_name_to_output = {
+        output_name: {
+            **result_record_metadata,
+            "base_data_variant": base_data_variant,
+            "data_source": source_name,
+            "data_variant": collection_name,
+            "encoder_name": output_name,
+            "top_k": top_k_after_query_fusion,
+            "use_max_similarity_query_fusion_before_rrf": use_max_similarity_query_fusion_before_rrf,
+            "first_batch_embed_seconds": None,
+            "first_batch_query_seconds": None,
+            "n_failed_emails": 0,
+            "results": [],
+        }
+        for output_name in embedding_kind_to_output_name.values()
     }
 
-    for rewritten_email in rewritten_emails:
+    retrieval_jobs = []
+    for email_index, rewritten_email in enumerate(rewritten_emails):
         retrieval_query_batches = build_retrieval_query_batches_for_one_email(
             rewritten_email=rewritten_email,
             retrieval_batch_size=encoder_runtime_config["batch_size"],
-            force_source_query=force_source_query,
         )
-        retrieval_failed = False
-        query_entries_with_top_k_chunks = []
-
         for retrieval_query_batch in retrieval_query_batches:
-            retrieval_query_batch_texts = retrieval_query_batch["query_texts"]
+            retrieval_jobs.append({
+                "email_index": email_index,
+                "rewritten_email": rewritten_email,
+                "typed_queries": retrieval_query_batch["typed_queries"],
+                "query_texts": retrieval_query_batch["query_texts"],
+            })
 
-            try:
-                retrieval_response = run_encoder_retriever.remote(
-                    retrieval_query_batch_texts,
-                    collection_name,
-                    encoder_name,
-                    top_k_per_query,
-                )
-            except Exception as e:
-                print(
-                    "run_single_encoder_retrieval: retrieval failed"
-                    f" | data variant {collection_name}"
-                    f" | encoder {encoder_name}"
-                    f" | error {e}"
-                )
+    async def run_retrieval_jobs_async():
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_BATCHES)
+
+        async def run_one_retrieval_job(retrieval_job):
+            async with semaphore:
+                try:
+                    retrieval_response = await run_encoder_query_retriever.remote.aio(
+                        retrieval_job["query_texts"],
+                        collection_name,
+                        encoder_name,
+                        top_k_per_query,
+                    )
+                except Exception as e:
+                    print(
+                        "run_single_encoder_retrieval: retrieval failed"
+                        f" | data variant {collection_name}"
+                        f" | encoder {encoder_name}"
+                        f" | error {e}"
+                    )
+                    return {**retrieval_job, "retrieval_response": None}
+                return {**retrieval_job, "retrieval_response": retrieval_response}
+
+        return await asyncio.gather(*[
+            run_one_retrieval_job(retrieval_job)
+            for retrieval_job in retrieval_jobs
+        ])
+
+    retrieval_job_results = asyncio.run(run_retrieval_jobs_async())
+    email_index_to_retrieval_job_results = {
+        email_index: []
+        for email_index in range(len(rewritten_emails))
+    }
+    for retrieval_job_result in retrieval_job_results:
+        email_index_to_retrieval_job_results[retrieval_job_result["email_index"]].append(
+            retrieval_job_result
+        )
+
+    for email_index, rewritten_email in enumerate(rewritten_emails):
+        retrieval_failed = False
+        output_name_to_query_entries_with_top_k_chunks = {
+            output_name: []
+            for output_name in encoder_name_to_output
+        }
+
+        for retrieval_job_result in email_index_to_retrieval_job_results[email_index]:
+            retrieval_response = retrieval_job_result["retrieval_response"]
+            if retrieval_response is None:
                 retrieval_failed = True
                 break
 
-            if encoder_output["first_batch_embed_seconds"] is None:
-                encoder_output["first_batch_embed_seconds"] = retrieval_response["timings"]["embed_seconds"]
-                encoder_output["first_batch_query_seconds"] = retrieval_response["timings"]["query_seconds"]
+            for output in encoder_name_to_output.values():
+                if output["first_batch_embed_seconds"] is None:
+                    output["first_batch_embed_seconds"] = retrieval_response["timings"]["embed_seconds"]
+                    output["first_batch_query_seconds"] = retrieval_response["timings"]["query_seconds"]
 
-            n_actual_query_responses = len(retrieval_response["results"])
-            if n_actual_query_responses != len(retrieval_query_batch_texts):
-                print(
-                    "run_single_encoder_retrieval: retrieval returned wrong number of query responses"
-                    f" | data variant {collection_name}"
-                    f" | encoder {encoder_name}"
-                    f" | expected {len(retrieval_query_batch_texts)}"
-                    f" | actual {n_actual_query_responses}"
-                )
-                retrieval_failed = True
+            embedding_kind_to_results = retrieval_response["embedding_kind_to_results"]
+            query_texts = retrieval_job_result["query_texts"]
+            for embedding_kind in embedding_kinds:
+                if embedding_kind not in embedding_kind_to_results:
+                    print(
+                        "run_single_encoder_retrieval: retrieval did not return embedding kind"
+                        f" | data variant {collection_name}"
+                        f" | encoder {encoder_name}"
+                        f" | embedding kind {embedding_kind}"
+                    )
+                    retrieval_failed = True
+                    break
+                n_actual_query_responses = len(embedding_kind_to_results[embedding_kind])
+                if n_actual_query_responses != len(query_texts):
+                    print(
+                        "run_single_encoder_retrieval: retrieval returned wrong number of query responses"
+                        f" | data variant {collection_name}"
+                        f" | encoder {encoder_name}"
+                        f" | embedding kind {embedding_kind}"
+                        f" | expected {len(query_texts)}"
+                        f" | actual {n_actual_query_responses}"
+                    )
+                    retrieval_failed = True
+                    break
+            if retrieval_failed:
                 break
 
-            typed_query_batch = retrieval_query_batch["typed_queries"]
-            query_entries_with_top_k_chunks.extend([
-                {
-                    "query": typed_query["query"],
-                    "query_type": typed_query["query_type"],
-                    "top_k_chunks": query_top_k_chunk_list,
-                }
-                for typed_query, query_top_k_chunk_list in zip(typed_query_batch, retrieval_response["results"])
-            ])
+            typed_query_batch = retrieval_job_result["typed_queries"]
+            for embedding_kind, query_result_lists in embedding_kind_to_results.items():
+                output_name = embedding_kind_to_output_name[embedding_kind]
+                output_name_to_query_entries_with_top_k_chunks[output_name].extend([
+                    {
+                        "query": typed_query["query"],
+                        "query_type": typed_query["query_type"],
+                        "top_k_chunks": query_top_k_chunk_list,
+                    }
+                    for typed_query, query_top_k_chunk_list in zip(typed_query_batch, query_result_lists)
+                ])
 
         if retrieval_failed:
-            encoder_output["n_failed_emails"] += 1
-            encoder_output["results"].append({
+            for output in encoder_name_to_output.values():
+                output["n_failed_emails"] += 1
+                output["results"].append({
+                    "email": rewritten_email["email"],
+                    "query_type_to_rewritten_queries": rewritten_email["query_type_to_rewritten_queries"],
+                    "reranker_query": rewritten_email["reranker_query"],
+                    "retrieval_failed": True,
+                    "retrieval_results": [],
+                })
+            continue
+
+        for output_name, query_entries_with_top_k_chunks in output_name_to_query_entries_with_top_k_chunks.items():
+            result_entry = {
                 "email": rewritten_email["email"],
                 "query_type_to_rewritten_queries": rewritten_email["query_type_to_rewritten_queries"],
                 "reranker_query": rewritten_email["reranker_query"],
-                "retrieval_failed": True,
-                "retrieval_results": [],
-            })
-            continue
+                "retrieval_failed": False,
+            }
+            if use_max_similarity_query_fusion_before_rrf:
+                fused_chunks = fuse_multiple_query_types_for_one_sample(
+                    query_entries_with_top_k_chunks,
+                    top_k_after_query_fusion,
+                )
+                result_entry["retrieval_results"] = [
+                    {**selected_chunk, "rank": rank}
+                    for rank, selected_chunk in enumerate(fused_chunks, start=1)
+                ]
+            else:
+                result_entry["retrieval_results"] = [
+                    {
+                        **retrieved_chunk,
+                        "rank": rank,
+                        "query_matching_retrieved_chunk": {
+                            "query": query_entry["query"],
+                            "query_type": query_entry["query_type"],
+                        },
+                    }
+                    for query_entry in query_entries_with_top_k_chunks
+                    for rank, retrieved_chunk in enumerate(
+                        query_entry["top_k_chunks"],
+                        start=1,
+                    )
+                ]
+            encoder_name_to_output[output_name]["results"].append(result_entry)
+    return encoder_name_to_output
 
-        fused_chunks = fuse_multiple_query_results_for_one_sample(
-            query_entries_with_top_k_chunks,
-            top_k_after_query_fusion,
-        )
-        encoder_output["results"].append({
-            "email": rewritten_email["email"],
-            "query_type_to_rewritten_queries": rewritten_email["query_type_to_rewritten_queries"],
-            "reranker_query": rewritten_email["reranker_query"],
-            "retrieval_failed": False,
-            "retrieval_results": [
-                {**selected_chunk, "rank": rank}
-                for rank, selected_chunk in enumerate(fused_chunks, start=1)
-            ],
-        })
-    return encoder_output
-
-#########################################################
-# Helper 13: Fuse multiple query results for one sample #
-#########################################################
-def fuse_multiple_query_results_for_one_sample(sample_query_entries_with_top_k_chunks, top_k):
+#######################################################
+# Helper 13: Fuse multiple query types for one sample #
+#######################################################
+def fuse_multiple_query_types_for_one_sample(sample_query_entries_with_top_k_chunks, top_k):
     import json
 
     # given we do query rewritting, having multiple queries per sample (email),
@@ -481,35 +587,40 @@ def fuse_multiple_query_results_for_one_sample(sample_query_entries_with_top_k_c
         return sorted_candidates
     return sorted_candidates[:top_k]
 
-#######################################################################################
-# Helper 14: Fuse encoder results for one sample with weighted reciprocal rank fusion #
-#######################################################################################
-def fuse_encoder_results_with_weighted_rrf(encoder_name_to_top_k_chunks, top_k, encoder_name_to_weight=None, rank_constant=60):
+####################################################################################
+# Helper 14: Fuse ranked lists for one sample with weighted reciprocal rank fusion #
+####################################################################################
+def fuse_ranked_lists_with_weighted_rrf(ranked_list_name_to_chunks, top_k, ranked_list_name_to_weight=None, rank_constant=60):
     import json
     from config.encoder import DEFAULT_RRF_ENCODER_WEIGHT
 
-    # each key is an encoder name and each value is that encoder's ranked chunks
-    if encoder_name_to_weight is None:
-        encoder_name_to_weight = {}
+    # each key is a ranked-list name and each value is that list's ranked chunks
+    if ranked_list_name_to_weight is None:
+        ranked_list_name_to_weight = {}
     payload_to_rrf_candidate = {}
-    for encoder_name, top_k_chunks in encoder_name_to_top_k_chunks.items():
-        encoder_weight = encoder_name_to_weight.get(encoder_name, DEFAULT_RRF_ENCODER_WEIGHT)
+    for ranked_list_name, top_k_chunks in ranked_list_name_to_chunks.items():
+        ranked_list_weight = ranked_list_name_to_weight.get(
+            ranked_list_name,
+            DEFAULT_RRF_ENCODER_WEIGHT,
+        )
         for retrieved_chunk in top_k_chunks:
             payload = retrieved_chunk["payload"]
             payload_key = json.dumps(payload, sort_keys=True, ensure_ascii=False)
             if payload_key not in payload_to_rrf_candidate:
                 payload_to_rrf_candidate[payload_key] = {
                     "score": 0.0,
-                    "encoder_to_query_matching_retrieved_chunk": {},
-                    "encoder_scores": {},
-                    "encoder_ranks": {},
+                    "ranked_list_to_query_matching_retrieved_chunk": {},
+                    "ranked_list_scores": {},
+                    "ranked_list_ranks": {},
                     "payload": payload,
                 }
             rrf_chunk_for_payload = payload_to_rrf_candidate[payload_key]
-            rrf_chunk_for_payload["score"] += encoder_weight / (rank_constant + retrieved_chunk["rank"])
-            rrf_chunk_for_payload["encoder_to_query_matching_retrieved_chunk"][encoder_name] = retrieved_chunk["query_matching_retrieved_chunk"]
-            rrf_chunk_for_payload["encoder_scores"][encoder_name] = retrieved_chunk["score"]
-            rrf_chunk_for_payload["encoder_ranks"][encoder_name] = retrieved_chunk["rank"]
+            rrf_chunk_for_payload["score"] += (
+                ranked_list_weight / (rank_constant + retrieved_chunk["rank"])
+            )
+            rrf_chunk_for_payload["ranked_list_to_query_matching_retrieved_chunk"][ranked_list_name] = retrieved_chunk["query_matching_retrieved_chunk"]
+            rrf_chunk_for_payload["ranked_list_scores"][ranked_list_name] = retrieved_chunk["score"]
+            rrf_chunk_for_payload["ranked_list_ranks"][ranked_list_name] = retrieved_chunk["rank"]
 
     sorted_candidates = sorted(
         payload_to_rrf_candidate.values(),
@@ -525,7 +636,7 @@ def fuse_encoder_results_with_weighted_rrf(encoder_name_to_top_k_chunks, top_k, 
 #################################################################
 def keep_category_minimums_from_ranked_chunks(ranked_chunks, top_k, category_to_min_final_count):
     # ranked chunks are assummed to be **already** deduplicated
-    # (e.g., from fuse_encoder_results_with_weighted_rrf)
+    # (e.g., from fuse_ranked_lists_with_weighted_rrf)
     plain_top_k_original_chunks = ranked_chunks[:top_k]
 
     if not category_to_min_final_count:
@@ -589,8 +700,10 @@ def build_reciprocal_rank_fusion_output_for_one_source(
         encoder_name_to_output,
         encoder_name_to_rrf_weight,
         top_k_after_source_rrf,
+        use_max_similarity_query_fusion_before_rrf,
         result_record_metadata,
         ):
+    from config.encoder import DEFAULT_RRF_ENCODER_WEIGHT
     from config.eval import CATEGORY_TO_MIN_FINAL_COUNT_AFTER_RRF
 
     encoder_names = list(encoder_name_to_output)
@@ -601,6 +714,7 @@ def build_reciprocal_rank_fusion_output_for_one_source(
         "data_source": source_name,
         "data_variant": collection_name,
         "top_k": top_k_after_source_rrf,
+        "use_max_similarity_query_fusion_before_rrf": use_max_similarity_query_fusion_before_rrf,
         "rrf_encoder_weights": {
             encoder_name: encoder_name_to_rrf_weight[encoder_name]
             for encoder_name in encoder_names
@@ -637,20 +751,58 @@ def build_reciprocal_rank_fusion_output_for_one_source(
             continue
 
         rrf_step_start = perf_counter()
-        if len(successful_encoder_results) == 1:
-            ranked_chunks_after_rrf = next(iter(successful_encoder_results.values()))["retrieval_results"]
+        if use_max_similarity_query_fusion_before_rrf:
+            ranked_list_name_to_chunks = {
+                encoder_name: encoder_result["retrieval_results"]
+                for encoder_name, encoder_result in successful_encoder_results.items()
+            }
+            ranked_list_name_to_weight = {
+                encoder_name: encoder_name_to_rrf_weight[encoder_name]
+                for encoder_name in successful_encoder_results
+                if encoder_name in encoder_name_to_rrf_weight
+            }
         else:
-            ranked_chunks_after_rrf = fuse_encoder_results_with_weighted_rrf(
-                {
-                    encoder_name: encoder_result["retrieval_results"]
-                    for encoder_name, encoder_result in successful_encoder_results.items()
-                },
+            ranked_list_name_to_chunks = {}
+            ranked_list_name_to_weight = {}
+            for encoder_name, encoder_result in successful_encoder_results.items():
+                encoder_weight = encoder_name_to_rrf_weight.get(
+                    encoder_name,
+                    DEFAULT_RRF_ENCODER_WEIGHT,
+                )
+                query_keys = {
+                    (
+                        retrieved_chunk["query_matching_retrieved_chunk"]["query_type"],
+                        retrieved_chunk["query_matching_retrieved_chunk"]["query"],
+                    )
+                    for retrieved_chunk in encoder_result["retrieval_results"]
+                }
+                if not query_keys:
+                    continue
+                query_result_weight = encoder_weight / len(query_keys)
+                for query_type, query in query_keys:
+                    ranked_list_name = (
+                        f"{encoder_name}::{query_type}::"
+                        f"{query}"
+                    )
+                    ranked_list_name_to_chunks[ranked_list_name] = [
+                        retrieved_chunk
+                        for retrieved_chunk in encoder_result["retrieval_results"]
+                        if (
+                            retrieved_chunk["query_matching_retrieved_chunk"]["query_type"],
+                            retrieved_chunk["query_matching_retrieved_chunk"]["query"],
+                        ) == (query_type, query)
+                    ]
+                    ranked_list_name_to_weight[ranked_list_name] = query_result_weight
+
+        if len(ranked_list_name_to_chunks) == 0:
+            ranked_chunks_after_rrf = []
+        elif len(ranked_list_name_to_chunks) == 1:
+            ranked_chunks_after_rrf = next(iter(ranked_list_name_to_chunks.values()))
+        else:
+            ranked_chunks_after_rrf = fuse_ranked_lists_with_weighted_rrf(
+                ranked_list_name_to_chunks,
                 top_k=None,
-                encoder_name_to_weight={
-                    encoder_name: encoder_name_to_rrf_weight[encoder_name]
-                    for encoder_name in successful_encoder_results
-                    if encoder_name in encoder_name_to_rrf_weight
-                },
+                ranked_list_name_to_weight=ranked_list_name_to_weight,
             )
         rrf_seconds += perf_counter() - rrf_step_start
 
@@ -766,7 +918,7 @@ def build_reranker_output_from_source_results(
                 })
                 continue
             reranker_chunk_texts = [
-                get_text_to_rerank_from_payload(selected_chunk["payload"])
+                get_text_from_payload(selected_chunk["payload"])
                 for selected_chunk in source_selected_chunks
             ]
             reranker_step_start = perf_counter()
@@ -830,6 +982,7 @@ def run_retrieval_pipeline_from_rewritten_emails(
         base_data_variant_to_source_to_encoder_settings,
         top_k_per_query,
         top_k_after_query_fusion,
+        use_max_similarity_query_fusion_before_rrf=True,
         result_record_metadata=None,
         top_k_after_source_rrf=None,
         top_k_after_rerank=None,
@@ -847,7 +1000,7 @@ def run_retrieval_pipeline_from_rewritten_emails(
         for source_name, encoder_name_to_settings in source_to_encoder_settings.items():
             base_data_variant_to_source_to_encoder_output[base_data_variant][source_name] = {}
             for encoder_name, encoder_settings in encoder_name_to_settings.items():
-                encoder_output = run_single_encoder_retrieval(
+                encoder_name_to_output = run_single_encoder_retrieval(
                     rewritten_emails=rewritten_emails,
                     base_data_variant=base_data_variant,
                     source_name=source_name,
@@ -856,25 +1009,37 @@ def run_retrieval_pipeline_from_rewritten_emails(
                     encoder_runtime_config=encoder_settings,
                     top_k_per_query=top_k_per_query,
                     top_k_after_query_fusion=top_k_after_query_fusion,
+                    use_max_similarity_query_fusion_before_rrf=use_max_similarity_query_fusion_before_rrf,
                     result_record_metadata=result_record_metadata,
                 )
-                base_data_variant_to_source_to_encoder_output[base_data_variant][source_name][encoder_name] = encoder_output
+                base_data_variant_to_source_to_encoder_output[base_data_variant][source_name].update(
+                    encoder_name_to_output
+                )
 
             if not encoder_name_to_settings:
                 continue
 
             first_encoder_settings = next(iter(encoder_name_to_settings.values()))
+            encoder_name_to_rrf_weight = {}
+            for encoder_name, encoder_settings in encoder_name_to_settings.items():
+                if "rrf_weight" not in encoder_settings:
+                    continue
+                embedding_kinds = EMBEDDING_ENCODERS[encoder_name]["embedding_kinds"]
+                for embedding_kind in embedding_kinds:
+                    output_name = (
+                        encoder_name
+                        if len(embedding_kinds) == 1
+                        else f"{encoder_name}_{embedding_kind}"
+                    )
+                    encoder_name_to_rrf_weight[output_name] = encoder_settings["rrf_weight"]
             base_data_variant_to_source_to_rrf_output[base_data_variant][source_name] = build_reciprocal_rank_fusion_output_for_one_source(
                 base_data_variant=base_data_variant,
                 source_name=source_name,
                 collection_name=first_encoder_settings["collection_name"],
                 encoder_name_to_output=base_data_variant_to_source_to_encoder_output[base_data_variant][source_name],
-                encoder_name_to_rrf_weight={
-                    encoder_name: encoder_settings["rrf_weight"]
-                    for encoder_name, encoder_settings in encoder_name_to_settings.items()
-                    if "rrf_weight" in encoder_settings
-                },
+                encoder_name_to_rrf_weight=encoder_name_to_rrf_weight,
                 top_k_after_source_rrf=top_k_after_source_rrf,
+                use_max_similarity_query_fusion_before_rrf=use_max_similarity_query_fusion_before_rrf,
                 result_record_metadata=result_record_metadata,
             )
 
@@ -905,6 +1070,7 @@ def run_retrieval_pipeline(
         base_data_variant_to_source_to_encoder_settings,
         top_k_per_query,
         top_k_after_query_fusion,
+        use_max_similarity_query_fusion_before_rrf=True,
         n_max_queries=None,
         result_record_metadata=None,
         max_query_rewrite_failure_rate=None,
@@ -924,6 +1090,8 @@ def run_retrieval_pipeline(
         rewrite_summary["n_query_rewriter_exceptions"]
         + rewrite_summary["n_empty_query_rewrite_outputs"]
         + rewrite_summary["n_no_usable_query_rewrite_outputs"]
+        + rewrite_summary["n_no_reranker_query_outputs"]
+        + rewrite_summary["n_no_anonymized_request_outputs"]
     )
     query_rewrite_failure_rate = (
         0.0 if not emails else n_query_rewrite_failures / len(emails)
@@ -941,6 +1109,7 @@ def run_retrieval_pipeline(
         base_data_variant_to_source_to_encoder_settings=base_data_variant_to_source_to_encoder_settings,
         top_k_per_query=top_k_per_query,
         top_k_after_query_fusion=top_k_after_query_fusion,
+        use_max_similarity_query_fusion_before_rrf=use_max_similarity_query_fusion_before_rrf,
         result_record_metadata=result_record_metadata,
         top_k_after_source_rrf=top_k_after_source_rrf,
         top_k_after_rerank=top_k_after_rerank,

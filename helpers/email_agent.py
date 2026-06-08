@@ -122,21 +122,22 @@ def read_latest_emails(
             # select folder
             imap.select(folder)
 
-            # search for either unseen or seen and unseen emails
+            # search for either unseen or seen and unseen emails, restricted by date
             use_unread_filter = unread_only and folder == INBOX_FOLDER
-            search_criteria = "(UNSEEN)" if use_unread_filter else "ALL"
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=last_n_days)
+            since_date = cutoff_date.strftime("%d-%b-%Y")
 
             # get all messages that fit the (above) criteria
-            retcode, messages = imap.search(None, search_criteria)
+            if use_unread_filter:
+                retcode, messages = imap.search(None, "UNSEEN", "SINCE", since_date)
+            else:
+                retcode, messages = imap.search(None, "SINCE", since_date)
 
             # get message ids
             email_ids = messages[0].split()
 
             # set up a list to hold ids, senders, dates and bodies
             emails_contents = []
-
-            # calculate cutoff date
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=last_n_days)
 
             # from latest to the oldest id:
             for email_id in reversed(email_ids):
@@ -213,7 +214,7 @@ def read_latest_emails(
                     ignore_message = False
                     
                     # break upon reaching max_emails
-                    if len(emails_contents) >= max_emails:
+                    if max_emails is not None and len(emails_contents) >= max_emails:
                         break
 
                 except Exception as e:

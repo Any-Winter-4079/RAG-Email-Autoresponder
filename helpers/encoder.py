@@ -124,17 +124,17 @@ def normalize_dense_embeddings(embeddings):
         embeddings = embeddings.float().numpy()
     return embeddings
 
-########################################
-# Helper 4: Run encoder batch embedder #
-########################################
-def run_encoder_batch_embedder(variant, batch, encoder, worker_name):
+#################################################
+# Helper 4: Run encoder batch document embedder #
+#################################################
+def run_encoder_batch_document_embedder(variant, batch, encoder, worker_name):
     from config.encoder import EMBEDDING_ENCODERS
     texts = batch["texts"]
     print(f"{worker_name}: {variant}: encoder '{encoder}': embedding {len(texts)} texts")
     encoder_config = EMBEDDING_ENCODERS[encoder]
     embedding_kinds = encoder_config["embedding_kinds"]
     embedding_backend = encoder_config.get("embedding_backend", "fastembed")
-    encoder_model = get_or_load_encoder_model(run_encoder_batch_embedder, encoder_config)
+    encoder_model = get_or_load_encoder_model(run_encoder_batch_document_embedder, encoder_config)
     if embedding_backend == "flag_embedding":
         raw_embeddings = encoder_model.encode(
             texts,
@@ -150,54 +150,61 @@ def run_encoder_batch_embedder(variant, batch, encoder, worker_name):
         if "sparse" in embedding_kinds and "lexical_weights" in raw_embeddings:
             embeddings["sparse"] = raw_embeddings["lexical_weights"]
         if "late" in embedding_kinds and "colbert_vecs" in raw_embeddings:
-            embeddings["late"] = raw_embeddings["colbert_vecs"]
+            embeddings["late"] = list(raw_embeddings["colbert_vecs"])
         return embeddings
 
-    if embedding_backend == "fastembed":
+    elif embedding_backend == "fastembed":
         embeddings = list(encoder_model.embed(texts))
         if embedding_kinds[0] == "dense":
             embeddings = list(normalize_dense_embeddings(embeddings))
         return {embedding_kinds[0]: embeddings}
 
-    if "dense" not in embedding_kinds:
-        raise ValueError(
-            f"{worker_name}: embedding_backend '{embedding_backend}' only supports "
-            f"dense embeddings, got embedding_kinds '{embedding_kinds}'"
-        )
-
-    if embedding_backend == "transformers":
+    elif embedding_backend == "transformers":
+        if embedding_kinds != ["dense"]:
+            raise ValueError(
+                f"{worker_name}: embedding_backend 'transformers' only supports "
+                f"embedding_kinds ['dense'], got {embedding_kinds}"
+            )
         embeddings = encoder_model.encode(
             texts=texts,
             task="retrieval",
             prompt_name="document",
             max_length=encoder_config["max_recommended_input_size"],
         )
+        embeddings = normalize_dense_embeddings(embeddings)
+        return {"dense": list(embeddings)}
     elif embedding_backend == "sentence_transformers":
+        if embedding_kinds != ["dense"]:
+            raise ValueError(
+                f"{worker_name}: embedding_backend 'sentence_transformers' only supports "
+                f"embedding_kinds ['dense'], got {embedding_kinds}"
+            )
         embeddings = encoder_model.encode(
             texts,
             batch_size=len(texts),
         )
+        embeddings = normalize_dense_embeddings(embeddings)
+        return {"dense": list(embeddings)}
     else:
         raise ValueError(
-            f"{worker_name}: unsupported dense embedding_backend '{embedding_backend}'"
+            f"{worker_name}: unsupported embedding_backend '{embedding_backend}'"
         )
 
-    embeddings = normalize_dense_embeddings(embeddings)
-    return {"dense": list(embeddings)}
-
-###################################
-# Helper 5: Run encoder retriever #
-###################################
-def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name):
+###################################################################
+# Helper 5: Run encoder batch query embedder and Qdrant retriever #
+###################################################################
+def run_encoder_batch_query_embedder_and_qdrant_retriever(query_texts, variant, encoder_name, top_k, worker_name):
     import os
+    from config.collection_handler import COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT
     from config.encoder import EMBEDDING_ENCODERS
+    from helpers.general import get_qdrant_collection_name
     from config.qdrant_server import QDRANT_EXTERNAL_PROXY_PORT
     from qdrant_client import QdrantClient, models
     from time import perf_counter
-    import json
 
     total_start = perf_counter()
     n_queries = len(query_texts)
+    qdrant_collection_name = get_qdrant_collection_name(variant)
     encoder_config = EMBEDDING_ENCODERS[encoder_name]
     embedding_kinds = encoder_config["embedding_kinds"]
     embedding_backend = encoder_config.get("embedding_backend", "fastembed")
@@ -206,15 +213,16 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         f"variant='{variant}', n_queries={n_queries}, top_k={top_k}",
         flush=True,
     )
-    encoder_model = get_or_load_encoder_model(run_encoder_retriever, encoder_config)
+    encoder_model = get_or_load_encoder_model(run_encoder_batch_query_embedder_and_qdrant_retriever, encoder_config)
     # cache the HTTP client in the worker process so warm containers can reuse it
-    if not hasattr(run_encoder_retriever, "client"):
+    if not hasattr(run_encoder_batch_query_embedder_and_qdrant_retriever, "client"):
         print(f"{worker_name}: Qdrant client cache miss", flush=True)
         client_init_start = perf_counter()
         qdrant_url = f"{os.environ['QDRANT_URL'].rstrip('/')}:{QDRANT_EXTERNAL_PROXY_PORT}"
-        run_encoder_retriever.client = QdrantClient(
+        run_encoder_batch_query_embedder_and_qdrant_retriever.client = QdrantClient(
             url=qdrant_url,
             api_key=os.environ["QDRANT_API_KEY"],
+            timeout=COLLECTION_HANDLER_QDRANT_CLIENT_TIMEOUT,
         )
         client_init_seconds = perf_counter() - client_init_start
         print(
@@ -226,7 +234,7 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         client_init_seconds = 0.0
         print(f"{worker_name}: Qdrant client cache hit", flush=True)
 
-    client = run_encoder_retriever.client
+    client = run_encoder_batch_query_embedder_and_qdrant_retriever.client
 
     embed_start = perf_counter()
     print(
@@ -243,12 +251,12 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
             return_sparse="sparse" in embedding_kinds,
             return_colbert_vecs="late" in embedding_kinds,
         )
-        queries_by_embedding_kind = {}
+        embedding_kind_to_query_embeddings = {}
         if "dense" in embedding_kinds:
             queries = list(normalize_dense_embeddings(raw_query_embeddings["dense_vecs"]))
-            queries_by_embedding_kind["dense"] = queries
+            embedding_kind_to_query_embeddings["dense"] = queries
         if "sparse" in embedding_kinds:
-            queries_by_embedding_kind["sparse"] = [
+            embedding_kind_to_query_embeddings["sparse"] = [
                 models.SparseVector(
                     indices=[int(token_id) for token_id in lexical_weights.keys()],
                     values=list(lexical_weights.values()),
@@ -256,7 +264,8 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
                 for lexical_weights in raw_query_embeddings["lexical_weights"]
             ]
         if "late" in embedding_kinds:
-            queries_by_embedding_kind["late"] = raw_query_embeddings["colbert_vecs"]
+            embedding_kind_to_query_embeddings["late"] = raw_query_embeddings["colbert_vecs"]
+
     elif embedding_backend == "fastembed":
         if len(embedding_kinds) != 1:
             raise ValueError(
@@ -266,7 +275,7 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         embedding_kind = embedding_kinds[0]
         query_embeddings = list(encoder_model.query_embed(query_texts))
         if embedding_kind == "sparse":
-            queries_by_embedding_kind = {
+            embedding_kind_to_query_embeddings = {
                 "sparse": [
                     models.SparseVector(
                         indices=query_embedding.indices,
@@ -278,12 +287,13 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         elif embedding_kind in {"dense", "late"}:
             if embedding_kind == "dense":
                 query_embeddings = list(normalize_dense_embeddings(query_embeddings))
-            queries_by_embedding_kind = {embedding_kind: query_embeddings}
+            embedding_kind_to_query_embeddings = {embedding_kind: query_embeddings}
         else:
             raise ValueError(
                 f"{worker_name}: unsupported embedding kind '{embedding_kind}' "
                 f"for embedding_backend 'fastembed'"
             )
+
     elif embedding_backend == "transformers":
         if embedding_kinds != ["dense"]:
             raise ValueError(
@@ -297,7 +307,8 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
             max_length=encoder_config["max_recommended_input_size"],
         )
         query_embeddings = normalize_dense_embeddings(query_embeddings)
-        queries_by_embedding_kind = {"dense": list(query_embeddings)}
+        embedding_kind_to_query_embeddings = {"dense": list(query_embeddings)}
+
     elif embedding_backend == "sentence_transformers":
         if embedding_kinds != ["dense"]:
             raise ValueError(
@@ -307,16 +318,16 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         query_embeddings = encoder_model.encode(
             query_texts,
             batch_size=len(query_texts),
-            prompt_name="query",
+            prompt="Given a retrieval query about the master's programme, retrieve relevant passages or questions that contain information needed to answer it",
         )
         query_embeddings = normalize_dense_embeddings(query_embeddings)
-        queries_by_embedding_kind = {"dense": list(query_embeddings)}
+        embedding_kind_to_query_embeddings = {"dense": list(query_embeddings)}
     else:
         raise ValueError(
             f"{worker_name}: unsupported embedding_backend '{embedding_backend}'"
         )
 
-    for embedding_kind, queries in queries_by_embedding_kind.items():
+    for embedding_kind, queries in embedding_kind_to_query_embeddings.items():
         if len(queries) != n_queries:
             raise ValueError(
                 f"{worker_name}: encoder '{encoder_name}' returned {len(queries)} "
@@ -331,7 +342,7 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
 
     requests = []
     request_metadata = []
-    for embedding_kind, queries in queries_by_embedding_kind.items():
+    for embedding_kind, queries in embedding_kind_to_query_embeddings.items():
         vector_name = encoder_name if len(embedding_kinds) == 1 else f"{encoder_name}_{embedding_kind}"
         for query_index, query in enumerate(queries):
             requests.append(
@@ -348,11 +359,11 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
     query_start = perf_counter()
     print(
         f"{worker_name}: querying Qdrant for {len(requests)} requests "
-        f"against collection '{variant}'",
+        f"against collection '{qdrant_collection_name}'",
         flush=True,
     )
     query_responses = client.query_batch_points(
-        collection_name=variant,
+        collection_name=qdrant_collection_name,
         requests=requests,
     )
     query_seconds = perf_counter() - query_start
@@ -368,6 +379,13 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         ]
         for query_response in query_responses
     ]
+    embedding_kind_to_results = {
+        embedding_kind: [[] for _ in range(n_queries)]
+        for embedding_kind in embedding_kind_to_query_embeddings
+    }
+    for (query_index, embedding_kind), query_top_k_chunks in zip(request_metadata, results):
+        embedding_kind_to_results[embedding_kind][query_index] = query_top_k_chunks
+
     timings = {
         "client_init_seconds": client_init_seconds,
         "embed_seconds": embed_seconds,
@@ -382,29 +400,4 @@ def run_encoder_retriever(query_texts, variant, encoder_name, top_k, worker_name
         flush=True,
     )
 
-    if len(embedding_kinds) == 1:
-        fused_results = results
-    else:
-        payload_key_to_candidate_by_query = [{} for _ in range(n_queries)]
-        for (query_index, embedding_kind), query_top_k_chunks in zip(request_metadata, results):
-            for rank, chunk in enumerate(query_top_k_chunks, start=1):
-                payload_key = json.dumps(chunk["payload"], sort_keys=True, ensure_ascii=False)
-                query_candidates = payload_key_to_candidate_by_query[query_index]
-                if payload_key not in query_candidates:
-                    query_candidates[payload_key] = {
-                        **chunk,
-                        "score": 0.0,
-                        "embedding_kinds": [],
-                    }
-                query_candidates[payload_key]["score"] += 1.0 / (60 + rank)
-                query_candidates[payload_key]["embedding_kinds"].append(embedding_kind)
-        fused_results = [
-            sorted(
-                query_candidates.values(),
-                key=lambda candidate: candidate["score"],
-                reverse=True,
-            )[:top_k]
-            for query_candidates in payload_key_to_candidate_by_query
-        ]
-
-    return {"results": fused_results, "timings": timings}
+    return {"embedding_kind_to_results": embedding_kind_to_results, "timings": timings}

@@ -31,8 +31,35 @@ def build_email_knowledge_base_threads(threads_path, knowledge_base_path):
 
     return threads
 
+############################################
+# Helper 2: Check for a UPM author message #
+############################################
+def has_upm_author_message(thread, upm_domains):
+    from helpers.data import extract_emails_from_participant_raw_texts
+
+    for email in thread["emails"]:
+        author_emails = extract_emails_from_participant_raw_texts(email.get("author"))
+        if any(
+                any(f"@{domain}" in author_email for domain in upm_domains)
+                for author_email in author_emails):
+            return True
+    return False
+
+##########################################
+# Helper 3: Split threads by UPM authors #
+##########################################
+def split_threads_by_upm_author(threads, upm_domains):
+    upm_author_threads = []
+    no_upm_author_threads = []
+    for thread in threads:
+        if has_upm_author_message(thread, upm_domains):
+            upm_author_threads.append(thread)
+        else:
+            no_upm_author_threads.append(thread)
+    return upm_author_threads, no_upm_author_threads
+
 #########################################################
-# Helper 2: Run email knowledge base curator on threads #
+# Helper 4: Run email knowledge base curator on threads #
 #########################################################
 def run_email_knowledge_base_curator_on_threads(
         threads,
@@ -40,6 +67,7 @@ def run_email_knowledge_base_curator_on_threads(
         run_decoder_latest_tokenizer,
         email_knowledge_base_curator_profile_config,
         prompt_template,
+        upm_domains,
         max_emails_per_batch,
         max_threads_per_batch,
         max_concurrent_batches,
@@ -143,15 +171,23 @@ def run_email_knowledge_base_curator_on_threads(
         "token_limit": {"n_events": 0},
     }
     n_split_threads = 0
+    n_split_thread_chunks = 0
     n_thread_chunks = 0
+    no_upm_author_thread_chunks = []
 
     for thread in threads:
         thread_chunks = split_thread_into_chunks(thread)
         if len(thread_chunks) > 1:
             n_split_threads += 1
-        n_thread_chunks += len(thread_chunks)
+        n_split_thread_chunks += len(thread_chunks)
 
-        for thread_chunk in thread_chunks:
+        for thread_chunk_index, thread_chunk in enumerate(thread_chunks, start=1):
+            thread_chunk["thread_chunk_index"] = thread_chunk_index
+            thread_chunk["n_thread_chunks"] = len(thread_chunks)
+            if not has_upm_author_message(thread_chunk, upm_domains):
+                no_upm_author_thread_chunks.append(thread_chunk)
+                continue
+            n_thread_chunks += 1
             batch_emails = [
                 email
                 for batch_thread in batch
@@ -253,7 +289,9 @@ def run_email_knowledge_base_curator_on_threads(
     curator_statistics = {
         "n_input_threads": len(threads),
         "n_split_threads": n_split_threads,
+        "n_split_thread_chunks": n_split_thread_chunks,
         "n_thread_chunks": n_thread_chunks,
+        "n_no_upm_author_thread_chunks": len(no_upm_author_thread_chunks),
         "n_planned_batches": len(batches),
         "n_failed_exception_batches": 0,
         "n_failed_oom_batches": 0,
@@ -264,6 +302,7 @@ def run_email_knowledge_base_curator_on_threads(
         "n_no_useful_information_outputs": 0,
     }
     curated_thread_outputs = []
+    no_useful_information_thread_chunks = []
 
     for batch_index in range(len(batches)):
         batch_threads = batches[batch_index][0]
@@ -292,8 +331,18 @@ def run_email_knowledge_base_curator_on_threads(
             thread_id = batch_threads[i]["thread_id"]
             curator_output = curator_outputs[i]
             curator_output["thread_id"] = thread_id
+            curator_output["thread_chunk_index"] = batch_threads[i].get("thread_chunk_index")
+            curator_output["n_thread_chunks"] = batch_threads[i].get("n_thread_chunks")
             if curator_output.get("no_useful_information"):
                 curator_statistics["n_no_useful_information_outputs"] += 1
+                no_useful_information_thread_chunks.append({
+                    "folder_uri": batch_threads[i]["folder_uri"],
+                    "thread_id": thread_id,
+                    "thread_chunk_index": batch_threads[i].get("thread_chunk_index"),
+                    "n_thread_chunks": batch_threads[i].get("n_thread_chunks"),
+                    "emails": batch_threads[i]["emails"],
+                    "curator_output": curator_output,
+                })
             curated_thread_outputs.append(curator_output)
 
     if post_decoder_statistics_plot_path:
@@ -332,6 +381,8 @@ def run_email_knowledge_base_curator_on_threads(
             n_input_threads=len(threads),
             n_split_threads=n_split_threads,
             n_thread_chunks=n_thread_chunks,
+            n_no_upm_author_threads=0,
+            n_no_upm_author_thread_chunks=len(no_upm_author_thread_chunks),
             n_curated_thread_chunks=len(curated_thread_outputs),
             n_no_useful_information_outputs=(
                 curator_statistics["n_no_useful_information_outputs"]
@@ -345,12 +396,14 @@ def run_email_knowledge_base_curator_on_threads(
             "split_statistics": split_statistics,
             "curator_statistics": curator_statistics,
             "curated_thread_outputs": curated_thread_outputs,
+            "no_upm_author_thread_chunks": no_upm_author_thread_chunks,
+            "no_useful_information_thread_chunks": no_useful_information_thread_chunks,
         }
 
     return curated_thread_outputs
 
 ######################################################
-# Helper 3: Build email knowledge base data variants #
+# Helper 5: Build email knowledge base data variants #
 ######################################################
 def build_email_thread_knowledge_base_chunks(curator_output):
     abstract_chunks = []
@@ -405,7 +458,7 @@ def build_email_thread_knowledge_base_chunks(curator_output):
     }
 
 #####################################################
-# Helper 4: Save email knowledge-base curator plots #
+# Helper 6: Save email knowledge-base curator plots #
 #####################################################
 def save_email_knowledge_base_curator_plots(
     curator_run_data,
@@ -463,6 +516,8 @@ def save_email_knowledge_base_curator_plots(
         n_input_threads=curator_statistics["n_input_threads"],
         n_split_threads=curator_statistics["n_split_threads"],
         n_thread_chunks=curator_statistics["n_thread_chunks"],
+        n_no_upm_author_threads=curator_statistics.get("n_no_upm_author_threads", 0),
+        n_no_upm_author_thread_chunks=curator_statistics.get("n_no_upm_author_thread_chunks", 0),
         n_curated_thread_chunks=curator_statistics["n_curated_thread_outputs"],
         n_no_useful_information_outputs=(
             curator_statistics["n_no_useful_information_outputs"]
@@ -471,12 +526,14 @@ def save_email_knowledge_base_curator_plots(
     )
 
 ########################################################################
-# Helper 5: Save email-curator post-decoder info/no-info plot as image #
+# Helper 7: Save email-curator post-decoder info/no-info plot as image #
 ########################################################################
 def save_email_curator_usefulness_plot(
         n_input_threads,
         n_split_threads,
         n_thread_chunks,
+        n_no_upm_author_threads,
+        n_no_upm_author_thread_chunks,
         n_curated_thread_chunks,
         n_no_useful_information_outputs,
         output_path,
@@ -500,20 +557,104 @@ def save_email_curator_usefulness_plot(
         n_curated_thread_chunks
         - n_no_useful_information_outputs
     )
-    fig, ax = plt.subplots(figsize=(14.5, 4.8))
+    n_total_threads = n_input_threads + n_no_upm_author_threads
+    n_total_thread_chunks = n_thread_chunks + n_no_upm_author_thread_chunks
+
+    fig, axes = plt.subplots(1, 2, figsize=(14.8, 5.2))
     fig.suptitle(
-        "Email curator thread-chunk usefulness\n"
-        f"({n_curated_thread_chunks} curated thread chunks)",
+        "Email curator thread and thread-chunk usefulness",
         fontsize=17,
     )
 
+    availability_labels = ["Threads", "Thread chunks"]
+    with_upm_author_counts = [n_input_threads, n_thread_chunks]
+    without_upm_author_counts = [
+        n_no_upm_author_threads,
+        n_no_upm_author_thread_chunks,
+    ]
+    availability_ax = axes[0]
+    availability_ax.barh(
+        availability_labels,
+        with_upm_author_counts,
+        color=lighten_hex_color("#8BC34A"),
+        edgecolor="white",
+        linewidth=0.8,
+        label="With UPM-side author",
+    )
+    availability_ax.barh(
+        availability_labels,
+        without_upm_author_counts,
+        left=with_upm_author_counts,
+        color=lighten_hex_color("#607D8B"),
+        edgecolor="white",
+        linewidth=0.8,
+        label="Without UPM-side author",
+    )
+    max_availability_count = max(n_total_threads, n_total_thread_chunks, 1)
+    count_label_padding = max(0.02 * max_availability_count, 0.15)
+    for label_index, (with_count, without_count) in enumerate(zip(
+            with_upm_author_counts,
+            without_upm_author_counts)):
+        total_count = with_count + without_count
+        if with_count > 0:
+            availability_ax.text(
+                with_count / 2,
+                label_index,
+                str(with_count),
+                ha="center",
+                va="center",
+                color="white",
+                fontweight="bold" if with_count >= 10 else None,
+                fontsize=11,
+                clip_on=True,
+            )
+        if without_count > 0:
+            if without_count < 0.06 * max_availability_count:
+                if with_count > count_label_padding:
+                    without_count_label_x = with_count - 0.2 * count_label_padding
+                    without_count_label_ha = "right"
+                else:
+                    without_count_label_x = total_count + 0.2 * count_label_padding
+                    without_count_label_ha = "left"
+                availability_ax.text(
+                    without_count_label_x,
+                    label_index,
+                    str(without_count),
+                    ha=without_count_label_ha,
+                    va="center",
+                    color="white",
+                    fontsize=11,
+                )
+            else:
+                availability_ax.text(
+                    with_count + without_count / 2,
+                    label_index,
+                    str(without_count),
+                    ha="center",
+                    va="center",
+                    color="white",
+                    fontweight="bold" if without_count >= 10 else None,
+                    fontsize=11,
+                    clip_on=True,
+                )
+    availability_ax.set_xlim(
+        0,
+        max(1, max_availability_count),
+    )
+    availability_ax.set_title("UPM-side author availability", fontsize=13, pad=12)
+    availability_ax.set_xlabel("Count", fontsize=12)
+    availability_ax.tick_params(axis="both", labelsize=11)
+    availability_ax.grid(axis="x", alpha=0.25)
+    availability_ax.invert_yaxis()
+
+    curator_ax = axes[1]
     segments = [
         ("Useful", n_useful_thread_chunks, lighten_hex_color("#8BC34A")),
         ("No useful-info", n_no_useful_information_outputs, lighten_hex_color("#607D8B")),
     ]
     left = 0
     for label, value, color in segments:
-        ax.barh(
+        curator_ax.barh(
             ["Curated thread chunks"],
             [value],
             left=left,
@@ -524,34 +665,27 @@ def save_email_curator_usefulness_plot(
         )
         if value > 0:
             x_position = left + (value / 2)
-            ax.text(
+            curator_ax.text(
                 x_position,
                 0,
                 str(value),
                 ha="center",
                 va="center",
-                color="white" if value >= 10 else "black",
+                color="white",
                 fontweight="bold" if value >= 10 else None,
                 fontsize=11,
                 clip_on=True,
             )
         left += value
 
-    ax.set_xlim(0, max(1, n_curated_thread_chunks))
-    ax.set_xlabel("Thread-chunk count", fontsize=13)
-    ax.tick_params(axis="both", labelsize=12)
-    ax.grid(axis="x", alpha=0.25)
-    ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.86),
-        bbox_transform=fig.transFigure,
-        ncol=2,
-        fontsize=12,
-        frameon=False,
-    )
-
+    curator_ax.set_xlim(0, max(1, n_curated_thread_chunks))
+    curator_ax.set_ylim(-0.99, 0.99)
+    curator_ax.set_title("Decoder usefulness", fontsize=13, pad=12)
+    curator_ax.set_xlabel("Thread-chunk count", fontsize=12)
+    curator_ax.tick_params(axis="both", labelsize=11)
+    curator_ax.grid(axis="x", alpha=0.25)
     summary_text = (
-        f"Input threads total: {n_input_threads}\n"
+        f"Input threads total: {n_total_threads}\n"
         f"Split threads: {n_split_threads}\n"
         f"Thread chunks sent to LM: {n_thread_chunks}"
     )
@@ -570,7 +704,22 @@ def save_email_curator_usefulness_plot(
         },
     )
 
-    fig.subplots_adjust(left=0.16, right=0.96, bottom=0.23, top=0.70)
+    availability_ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.22),
+        ncol=1,
+        fontsize=10.5,
+        frameon=False,
+    )
+    curator_ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.22),
+        ncol=2,
+        fontsize=10.5,
+        frameon=False,
+    )
+
+    fig.subplots_adjust(left=0.09, right=0.98, bottom=0.32, top=0.80, wspace=0.26)
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     print(f"save_email_curator_usefulness_plot: saved plot to {output_path}")

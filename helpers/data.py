@@ -1274,17 +1274,12 @@ def build_samples_grouped_by_thread_and_folderURI(
             email_author_emails = extract_emails_from_participant_raw_texts(
                 email["author"]
             )
-            email_recipient_emails = extract_emails_from_participant_raw_texts(
-                email["recipients"]
-            )
-            is_message_to_self_from_director_pov = (
+            is_message_from_director_pov = (
                 bool(email_author_emails)
                 and
-                bool(email_recipient_emails)
-                and email_author_emails.issubset(my_email_addresses)
-                and email_recipient_emails.issubset(my_email_addresses)
+                email_author_emails.issubset(my_email_addresses)
             )
-            if is_message_to_self_from_director_pov:
+            if is_message_from_director_pov:
                 continue
 
             context_emails = thread_emails[:email_index]
@@ -1604,6 +1599,7 @@ def prepare_batches_for_data_variant(
 def assign_thread_ids_by_subject_and_participant_overlap_for_production(emails, my_email_addresses):
     if not emails:
         return []
+    from datetime import datetime, timezone
 
     my_email_addresses = set(
         email.lower()
@@ -1611,53 +1607,75 @@ def assign_thread_ids_by_subject_and_participant_overlap_for_production(emails, 
         if email
     )
 
-    emails_with_threads = {}
+    def get_email_sort_key(index_and_email):
+        index, email = index_and_email
+        email_date = email.get("date")
+        if isinstance(email_date, datetime):
+            if email_date.tzinfo is None:
+                email_date = email_date.replace(tzinfo=timezone.utc)
+            else:
+                email_date = email_date.astimezone(timezone.utc)
+        else:
+            email_date = datetime.min.replace(tzinfo=timezone.utc)
+        return (email_date, index)
 
-    for email in emails:
-        email_subject = email.get("subject") or ""
-        email_normalized_subject = normalize_subject(email_subject)
-        email_participants = extract_emails_from_participant_raw_texts(
+    thread_id_to_metadata = {}
+    email_thread_ids = []
+    next_thread_id = 1
+    sorted_emails = [
+        email
+        for _, email
+        in sorted(enumerate(emails), key=get_email_sort_key)
+    ]
+
+    for email_index, email in enumerate(sorted_emails):
+        normalized_subject = normalize_subject(email.get("subject") or "")
+        all_participants = extract_emails_from_participant_raw_texts(
             email.get("from"),
             email.get("to"),
         )
-        email_participants = {email for email in email_participants if email not in my_email_addresses}
-        if not email_participants:
-            continue
-        email_participants_key = tuple(sorted(email_participants))
+        participants = {
+            participant
+            for participant in all_participants
+            if participant not in my_email_addresses
+        }
 
-        found_key_match = False
-        # if it's the first email, add
-        if len(emails_with_threads) == 0:
-            emails_with_threads[(email_normalized_subject, email_participants_key)] = [email]
-        # otherwise:
+        candidate_thread_ids = []
+        for thread_id, metadata in thread_id_to_metadata.items():
+            if metadata["normalized_subject"] != normalized_subject:
+                continue
+            if participants and metadata["participants"] and not participants.intersection(metadata["participants"]):
+                continue
+            candidate_thread_ids.append(thread_id)
+
+        if candidate_thread_ids:
+            best_thread_id = max(
+                candidate_thread_ids,
+                key=lambda thread_id: (
+                    len(participants.intersection(thread_id_to_metadata[thread_id]["participants"])),
+                    thread_id_to_metadata[thread_id]["last_email_index"],
+                ),
+            )
+            thread_id_to_metadata[best_thread_id]["participants"].update(participants)
+            thread_id_to_metadata[best_thread_id]["last_email_index"] = email_index
+            email_thread_ids.append(best_thread_id)
         else:
-            # for what we've seen so far
-            for key in list(emails_with_threads.keys()):
-                thread_normalized_subject = key[0]
-                thread_participants = key[1]
-                # if our current email's normalized subject match and participants intersect:
-                if email_normalized_subject == thread_normalized_subject and set(thread_participants).intersection(email_participants):
-                    # calculate the new key (extending participants)
-                    new_thread_participants = email_participants.union(thread_participants)
-                    new_thread_participants_key = tuple(sorted(new_thread_participants))
-                    # set as new emails for the (normalized subject, extended set) the old emails (popping the key) and new email
-                    thread_emails = emails_with_threads.pop(key)
-                    thread_emails.append(email)
-                    emails_with_threads[(thread_normalized_subject, new_thread_participants_key)] = thread_emails
-                    found_key_match = True
-            # and if no match (with a normalized subject and participants), add as new key/value
-            if not found_key_match:
-                emails_with_threads[(email_normalized_subject, email_participants_key)] = [email]
+            thread_id = next_thread_id
+            next_thread_id += 1
+            thread_id_to_metadata[thread_id] = {
+                "normalized_subject": normalized_subject,
+                "participants": set(participants),
+                "last_email_index": email_index,
+            }
+            email_thread_ids.append(thread_id)
 
-    # add thread ids
-    emails_with_threads_list = []
-    for thread_id, thread_emails in enumerate(emails_with_threads.values(), start=1):
-        for thread_email in thread_emails:
-            email_with_thread = thread_email.copy()
-            email_with_thread["threadID"] = thread_id
-            emails_with_threads_list.append(email_with_thread)
+    emails_with_threads = []
+    for email, thread_id in zip(sorted_emails, email_thread_ids):
+        email_with_thread = email.copy()
+        email_with_thread["threadID"] = thread_id
+        emails_with_threads.append(email_with_thread)
 
-    return emails_with_threads_list
+    return emails_with_threads
 
 ################################################
 # Helper 24: Build stable key per email sample #
@@ -1668,26 +1686,95 @@ def build_email_sample_key(email_sample):
         email_sample["thread_id"],
         email_sample["email"]["subject"],
         email_sample["email"]["body"],
+        len(email_sample["context_emails"]),
     )
 
 ###################################################################
 # Helper 25: Build intermediate and final rows for M3 fine-tuning #
 ###################################################################
 def build_finetune_rows(
-        data_variant_to_oracle_results,
-        data_variant_to_rrf_results,
+        query_rewrite_entries,
+        data_variant_to_source_to_oracle_results,
+        data_variant_to_source_to_encoder_results,
         query_types,
+        query_type_to_weight,
+        query_query_augmentation_ratio,
+        n_queries_per_sample,
+        n_negatives_per_sample,
+        n_insufficient_negatives_per_sample,
+        random_seed,
+        top_k_retrieval_mined_negatives_per_file,
         ):
+    import math
+    import random
+
     from config.decoder import QUERY_TYPE_TO_N_MAX_QUERIES
-    from helpers.eval import get_text_to_rerank_from_payload
+    from helpers.eval import get_text_from_payload
 
-    all_query_types = list(QUERY_TYPE_TO_N_MAX_QUERIES) + ["reranker", "original_email"]
-    first_data_variant_oracle_results = next(iter(data_variant_to_oracle_results.values()))
+    all_query_types = list(QUERY_TYPE_TO_N_MAX_QUERIES) + ["reranker"]
+    rng = random.Random(random_seed)
     email_sample_key_to_intermediate_row = {}
+    if query_query_augmentation_ratio < 0:
+        raise ValueError("build_finetune_rows: query-query augmentation ratio must be non-negative")
 
-    # figure out which emails to include in the fine-tuning dataset
-    for oracle_result in first_data_variant_oracle_results:
-        email_sample = oracle_result["sample"]
+    def add_text_by_source(intermediate_row, field_name, source, text):
+        if source not in intermediate_row[field_name]:
+            intermediate_row[field_name][source] = set()
+        intermediate_row[field_name][source].add(text)
+
+    def get_weighted_query_counts(query_type_to_candidates):
+        weights_total = sum(
+            query_type_to_weight[query_type]
+            for query_type in query_types
+        )
+        if abs(weights_total - 1) > 1e-6:
+            raise ValueError(
+                "build_finetune_rows: query type weights must add up to 1; "
+                f"got {weights_total}"
+            )
+
+        n_available_queries = len({
+            query_candidate
+            for query_candidates in query_type_to_candidates.values()
+            for query_candidate in query_candidates
+        })
+        n_queries_to_select = min(n_queries_per_sample, n_available_queries)
+        ideal_query_counts = {
+            query_type: query_type_to_weight[query_type] * n_queries_to_select
+            for query_type in query_types
+        }
+        query_type_to_count = {
+            query_type: min(
+                math.floor(ideal_query_counts[query_type]),
+                len(query_type_to_candidates[query_type]),
+            )
+            for query_type in query_types
+        }
+
+        n_remaining_queries = n_queries_to_select - sum(query_type_to_count.values())
+        while n_remaining_queries > 0:
+            eligible_query_types = [
+                query_type
+                for query_type in query_types
+                if query_type_to_count[query_type] < len(query_type_to_candidates[query_type])
+            ]
+            if not eligible_query_types:
+                break
+            next_query_type = max(
+                eligible_query_types,
+                key=lambda query_type: (
+                    ideal_query_counts[query_type] - query_type_to_count[query_type],
+                    query_type_to_weight[query_type],
+                ),
+            )
+            query_type_to_count[next_query_type] += 1
+            n_remaining_queries -= 1
+
+        return query_type_to_count
+
+    # add queries from the query-rewrite cache
+    for query_rewrite_entry in query_rewrite_entries:
+        email_sample = query_rewrite_entry["sample"]
         email_sample_key = build_email_sample_key(email_sample)
         email_sample_key_to_intermediate_row[email_sample_key] = {
             "email_sample": email_sample,
@@ -1700,68 +1787,103 @@ def build_finetune_rows(
             "negatives": set(),
             "negatives_by_source": {},
         }
+        intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
+        for rewritten_query in query_rewrite_entry["queries"]:
+            query_type = rewritten_query["query_type"]
+            if query_type in query_types:
+                intermediate_row["queries"][query_type].add(rewritten_query["query"])
+        if "reranker" in query_types and query_rewrite_entry.get("reranker_query"):
+            intermediate_row["queries"]["reranker"].add(query_rewrite_entry["reranker_query"])
 
-    # add oracle positives and negatives for each selected email
-    for data_variant, data_variant_oracle_results in data_variant_to_oracle_results.items():
-        for oracle_result in data_variant_oracle_results:
-            if oracle_result["generation_failed"]:
-                continue
-
-            email_sample_key = build_email_sample_key(oracle_result["sample"])
-            intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
-            source = f"oracle:{data_variant}"
-
-            # each reranker query can have *multiple* subqueries or subquestions we ask 
-            # the model to generate (with positives and negatives on each)
-            for subquery in oracle_result["discriminator_result"]["subqueries"]:
-                if subquery["answerability"] not in {"0", "1"}:
+    # add oracle positives first, so positives can win over all negative sources
+    for data_variant, source_to_oracle_results in data_variant_to_source_to_oracle_results.items():
+        for data_source, oracle_results in source_to_oracle_results.items():
+            for oracle_result in oracle_results:
+                if oracle_result.get("generation_failed"):
                     continue
-                for positive_chunk in subquery["supporting_chunks"]:
-                    positive_text = get_text_to_rerank_from_payload(positive_chunk["payload"])
-                    intermediate_row["positives"].add(positive_text)
-                    if source not in intermediate_row["positives_by_source"]:
-                        intermediate_row["positives_by_source"][source] = set()
-                    intermediate_row["positives_by_source"][source].add(positive_text)
-                for negative_chunk in subquery["insufficient_chunks"]:
-                    negative_text = get_text_to_rerank_from_payload(negative_chunk["payload"])
-                    if negative_text in intermediate_row["positives"]:
-                        continue
-                    intermediate_row["negatives"].add(negative_text)
-                    if source not in intermediate_row["negatives_by_source"]:
-                        intermediate_row["negatives_by_source"][source] = set()
-                    intermediate_row["negatives_by_source"][source].add(negative_text)
-
-    # add queries once from rrf and add rrf negatives for every data variant
-    for data_variant, data_variant_rrf_results in data_variant_to_rrf_results.items():
-        for rrf_result in data_variant_rrf_results:
-            email_sample_key = build_email_sample_key(rrf_result["sample"])
-            if email_sample_key not in email_sample_key_to_intermediate_row:
-                continue
-            intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
-
-            if not any(intermediate_row["queries"][query_type] for query_type in all_query_types):
-                if "reranker" in query_types:
-                    intermediate_row["queries"]["reranker"].add(rrf_result["reranker_query"])
-                if "original_email" in query_types:
-                    intermediate_row["queries"]["original_email"].add(
-                        f"Subject:\n{intermediate_row['email_sample']['email']['subject']}\n\n"
-                        f"Body:\n{intermediate_row['email_sample']['email']['body']}"
-                    )
-                for rewritten_query in rrf_result["rewritten_queries"]:
-                    query_type = rewritten_query["query_type"]
-                    if query_type not in query_types:
-                        continue
-                    intermediate_row["queries"][query_type].add(rewritten_query["query"])
-
-            source = f"rrf:{data_variant}"
-            for retrieval_result in rrf_result["retrieval_results"]:
-                negative_text = get_text_to_rerank_from_payload(retrieval_result["payload"])
-                if negative_text in intermediate_row["positives"]:
+                email_sample_key = build_email_sample_key(oracle_result["sample"])
+                if email_sample_key not in email_sample_key_to_intermediate_row:
                     continue
-                intermediate_row["negatives"].add(negative_text)
-                if source not in intermediate_row["negatives_by_source"]:
-                    intermediate_row["negatives_by_source"][source] = set()
-                intermediate_row["negatives_by_source"][source].add(negative_text)
+                intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
+                source = f"oracle:{data_variant}:{data_source}"
+                subqueries = (
+                    oracle_result.get("discriminator_result") or {}
+                ).get("subqueries") or []
+                for subquery in subqueries:
+                    if subquery["answerability"] not in {"0", "1"}:
+                        continue
+                    for positive_chunk in subquery["supporting_chunks"]:
+                        positive_payload = (
+                            positive_chunk.get("retrieval_result") or positive_chunk
+                        ).get("payload")
+                        if not positive_payload:
+                            continue
+                        positive_text = get_text_from_payload(positive_payload)
+                        intermediate_row["positives"].add(positive_text)
+                        add_text_by_source(
+                            intermediate_row=intermediate_row,
+                            field_name="positives_by_source",
+                            source=source,
+                            text=positive_text,
+                        )
+
+    # add oracle insufficient chunks as negatives after all positives are known
+    for data_variant, source_to_oracle_results in data_variant_to_source_to_oracle_results.items():
+        for data_source, oracle_results in source_to_oracle_results.items():
+            for oracle_result in oracle_results:
+                if oracle_result.get("generation_failed"):
+                    continue
+                email_sample_key = build_email_sample_key(oracle_result["sample"])
+                if email_sample_key not in email_sample_key_to_intermediate_row:
+                    continue
+                intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
+                source = f"oracle:{data_variant}:{data_source}"
+                subqueries = (
+                    oracle_result.get("discriminator_result") or {}
+                ).get("subqueries") or []
+                for subquery in subqueries:
+                    for negative_chunk in subquery["insufficient_chunks"]:
+                        negative_payload = (
+                            negative_chunk.get("retrieval_result") or negative_chunk
+                        ).get("payload")
+                        if not negative_payload:
+                            continue
+                        negative_text = get_text_from_payload(negative_payload)
+                        if not negative_text or negative_text in intermediate_row["positives"]:
+                            continue
+                        intermediate_row["negatives"].add(negative_text)
+                        add_text_by_source(
+                            intermediate_row=intermediate_row,
+                            field_name="negatives_by_source",
+                            source=source,
+                            text=negative_text,
+                        )
+
+    # add M3 retrieval-mined negatives, excluding oracle positives
+    for data_variant, source_to_encoder_results in data_variant_to_source_to_encoder_results.items():
+        for data_source, encoder_to_results in source_to_encoder_results.items():
+            for encoder_name, encoder_results in encoder_to_results.items():
+                source = f"m3:{data_variant}:{data_source}:{encoder_name}"
+                for encoder_result in encoder_results:
+                    if encoder_result.get("retrieval_failed"):
+                        continue
+                    email_sample_key = build_email_sample_key(encoder_result["sample"])
+                    if email_sample_key not in email_sample_key_to_intermediate_row:
+                        continue
+                    intermediate_row = email_sample_key_to_intermediate_row[email_sample_key]
+                    retrieval_results = encoder_result["retrieval_results"]
+                    retrieval_results = retrieval_results[:top_k_retrieval_mined_negatives_per_file]
+                    for retrieval_result in retrieval_results:
+                        negative_text = get_text_from_payload(retrieval_result["payload"])
+                        if not negative_text or negative_text in intermediate_row["positives"]:
+                            continue
+                        intermediate_row["negatives"].add(negative_text)
+                        add_text_by_source(
+                            intermediate_row=intermediate_row,
+                            field_name="negatives_by_source",
+                            source=source,
+                            text=negative_text,
+                        )
 
     intermediate_rows = []
 
@@ -1769,9 +1891,34 @@ def build_finetune_rows(
     for intermediate_row in email_sample_key_to_intermediate_row.values():
         if not intermediate_row["positives"]:
             continue
-        if not intermediate_row["negatives"]:
+
+        oracle_negatives = set()
+        retrieval_mined_negatives = set()
+        for source, negative_texts in intermediate_row["negatives_by_source"].items():
+            if source.startswith("oracle:"):
+                oracle_negatives.update(negative_texts)
+            elif source.startswith("m3:"):
+                retrieval_mined_negatives.update(negative_texts)
+        selected_oracle_negatives = rng.sample(
+            sorted(oracle_negatives),
+            min(n_negatives_per_sample, n_insufficient_negatives_per_sample, len(oracle_negatives)),
+        )
+        retrieval_mined_negatives -= oracle_negatives
+        n_retrieval_mined_negatives = n_negatives_per_sample - len(selected_oracle_negatives)
+        if n_retrieval_mined_negatives > 0:
+            selected_retrieval_mined_negatives = rng.sample(
+                sorted(retrieval_mined_negatives),
+                min(n_retrieval_mined_negatives, len(retrieval_mined_negatives)),
+            )
+        else:
+            selected_retrieval_mined_negatives = []
+        selected_negatives = set(selected_oracle_negatives).union(selected_retrieval_mined_negatives)
+        if not selected_negatives:
             continue
+
+        group_id = len(intermediate_rows)
         intermediate_rows.append({
+            "group_id": group_id,
             "email_sample": intermediate_row["email_sample"],
             "queries": {
                 query_type: sorted(intermediate_row["queries"][query_type])
@@ -1782,21 +1929,124 @@ def build_finetune_rows(
                 source: sorted(passage_texts)
                 for source, passage_texts in intermediate_row["positives_by_source"].items()
             },
-            "negatives": sorted(intermediate_row["negatives"]),
+            "negatives": sorted(selected_negatives),
             "negatives_by_source": {
-                source: sorted(passage_texts)
+                source: sorted(passage_texts.intersection(selected_negatives))
                 for source, passage_texts in intermediate_row["negatives_by_source"].items()
+                if passage_texts.intersection(selected_negatives)
             },
         })
 
     finetune_rows = []
+    selected_query_groups = []
     for intermediate_row in intermediate_rows:
-        for query_type in all_query_types:
-            for query_text in intermediate_row["queries"][query_type]:
+        query_type_to_candidates = {
+            query_type: list(intermediate_row["queries"][query_type])
+            for query_type in query_types
+        }
+        query_type_to_count = get_weighted_query_counts(query_type_to_candidates)
+        selected_queries = []
+        selected_query_set = set()
+        selected_query_type_to_count = {
+            query_type: 0
+            for query_type in query_types
+        }
+        for query_type in query_types:
+            available_query_candidates = [
+                query_text
+                for query_text in query_type_to_candidates[query_type]
+                if query_text not in selected_query_set
+            ]
+            sampled_queries = rng.sample(
+                available_query_candidates,
+                min(query_type_to_count[query_type], len(available_query_candidates)),
+            )
+            selected_queries.extend(sampled_queries)
+            selected_query_set.update(sampled_queries)
+            selected_query_type_to_count[query_type] = len(sampled_queries)
+        n_queries_to_select = min(
+            n_queries_per_sample,
+            len({
+                query_text
+                for query_candidates in query_type_to_candidates.values()
+                for query_text in query_candidates
+            }),
+        )
+        while len(selected_queries) < n_queries_to_select:
+            eligible_query_types = [
+                query_type
+                for query_type in query_types
+                if any(
+                    query_text not in selected_query_set
+                    for query_text in query_type_to_candidates[query_type]
+                )
+            ]
+            if not eligible_query_types:
+                break
+            next_query_type = max(
+                eligible_query_types,
+                key=lambda query_type: (
+                    query_type_to_weight[query_type] * n_queries_to_select
+                    - selected_query_type_to_count[query_type],
+                    query_type_to_weight[query_type],
+                ),
+            )
+            remaining_query_candidates = [
+                query_text
+                for query_text in query_type_to_candidates[next_query_type]
+                if query_text not in selected_query_set
+            ]
+            selected_query = rng.choice(remaining_query_candidates)
+            selected_queries.append(selected_query)
+            selected_query_set.add(selected_query)
+            selected_query_type_to_count[next_query_type] += 1
+        rng.shuffle(selected_queries)
+        selected_query_groups.append({
+            "group_id": intermediate_row["group_id"],
+            "selected_queries": selected_queries,
+            "positives": intermediate_row["positives"],
+            "negatives": intermediate_row["negatives"],
+        })
+
+        for query_text in selected_queries:
+            finetune_rows.append({
+                "row_type": "query_passage",
+                "group_id": intermediate_row["group_id"],
+                "query": query_text,
+                "pos": intermediate_row["positives"],
+                "neg": intermediate_row["negatives"],
+            })
+
+    if query_query_augmentation_ratio > 0:
+        for selected_query_group in selected_query_groups:
+            selected_queries = selected_query_group["selected_queries"]
+            if len(selected_queries) < 2:
+                continue
+            n_query_query_rows = math.floor(
+                len(selected_queries) * query_query_augmentation_ratio + 0.5
+            )
+            if n_query_query_rows <= 0:
+                continue
+            negative_query_candidates = sorted({
+                query_text
+                for other_query_group in selected_query_groups
+                if other_query_group["group_id"] != selected_query_group["group_id"]
+                for query_text in other_query_group["selected_queries"]
+            })
+            if not negative_query_candidates:
+                continue
+            for _ in range(n_query_query_rows):
+                query_text, positive_query_text = rng.sample(selected_queries, 2)
+                selected_negative_queries = rng.sample(
+                    negative_query_candidates,
+                    min(n_negatives_per_sample, len(negative_query_candidates)),
+                )
                 finetune_rows.append({
+                    "row_type": "query_query",
+                    "group_id": selected_query_group["group_id"],
                     "query": query_text,
-                    "pos": intermediate_row["positives"],
-                    "neg": intermediate_row["negatives"],
+                    "pos": [positive_query_text],
+                    "neg": selected_negative_queries,
                 })
 
     return intermediate_rows, finetune_rows
