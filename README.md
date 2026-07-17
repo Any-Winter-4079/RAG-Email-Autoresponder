@@ -1,6 +1,6 @@
 # RAG-based Email Autoresponder
 
-This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](./M_Sc_AI_Defense.pdf).
+This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](./M_Sc_AI_Defense.pdf?raw=1).
 
 ## Overview
 
@@ -274,8 +274,6 @@ The tables below summarize the remote Modal applications and functions used by t
 | --------------------- | ------------ | -------- | ----------: | ------------: | ------ |
 | `serve_qdrant_server` | Web endpoint | CPU      |        3600 |           900 | Yes    |
 
-The Qdrant endpoint runs with one non-preemptible container (`min_containers=1`, `max_containers=1`) and accepts up to 100 concurrent inputs.
-
 ### `storage-handler`
 
 | Function              | Schedule  | Hardware | Timeout (s) | Scaledown (s) | Volume |
@@ -284,8 +282,6 @@ The Qdrant endpoint runs with one non-preemptible container (`min_containers=1`,
 | `read_jsonl_records`  | On demand | CPU      |        3600 |            60 | Yes    |
 
 ### `volume-handler`
-
-These functions are not deployed by default; volume removal is only available from local execution.
 
 | Function                 | Schedule  | Hardware | Timeout (s) | Scaledown (s) | Volume |
 | ------------------------ | --------- | -------- | ----------: | ------------: | ------ |
@@ -320,7 +316,3 @@ These functions are not deployed by default; volume removal is only available fr
 | Function        | Schedule  | Hardware | Timeout (s) | Scaledown (s) | Volume |
 | --------------- | --------- | -------- | ----------: | ------------: | ------ |
 | `run_llm_judge` | On demand | CPU      |         900 |            60 | No     |
-
-## Fine-Tuning
-
-BGE-M3 fine-tuning instructions are documented in [`finetune/README.md`](finetune/README.md).
