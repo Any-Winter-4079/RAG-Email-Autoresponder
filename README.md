@@ -1,10 +1,98 @@
 # RAG-based Email Autoresponder
 
-This repository contains a RAG-based email autoresponder for the MUIA master's program. The system is organized around Modal applications that crawl and encode knowledge-base collections, retrieve and rerank context for incoming email threads, run local decoder/encoder models, manage Qdrant collections, and support evaluation.
+This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below.
 
 ## Overview
 
 <img width="5097" height="4729" alt="muia_prod_pipeline" src="https://github.com/user-attachments/assets/e01e88dc-2b1e-4f5a-afdd-2b82038f7f48" />
+
+## Anonymized examples
+
+### Schedule query
+
+**Incoming email**
+
+> Hola,
+>
+> ¿Cuándo se imparte Redes Bayesianas? No encuentro el horario en Moodle.
+>
+> Gracias.
+
+**Generated response**
+
+> Hola,
+>
+> El horario para la asignatura de Redes Bayesianas (A4) en el curso 2025-26 es el siguiente:
+>
+> - Martes: 09:00 – 10:00
+> - Miércoles: 09:00 – 10:00
+> - Jueves: 17:00 – 19:00
+>
+> Ten en cuenta que esta asignatura se imparte de forma concentrada durante las primeras ocho semanas del semestre.
+>
+> Saludos,
+>
+> Damiano Zanardini
+
+### Admission rejection
+
+**Incoming email**
+
+> Buenas tardes,
+>
+> Me gustaría saber cuáles son las razones por las que se ha denegado el acceso a este máster.
+>
+> Cordialmente
+>
+> Dario
+
+**Generated response**
+
+> Estimado Dario,
+>
+> Lamento informarte que el Máster Universitario en Inteligencia Artificial es un programa de alta demanda, con un número de solicitantes muy superior al de plazas disponibles.
+>
+> Las decisiones de admisión son tomadas por la Comisión Académica del Máster (CAMIA) siguiendo un baremo que prioriza perfiles con una formación sólida en informática y excelentes resultados académicos. Los motivos más frecuentes de denegación suelen ser:
+>
+> - El grado de origen no está alineado con la Ingeniería Informática (requisito estricto para mantener sellos de calidad como Euro-Inf).
+> - La nota media académica no alcanza el nivel requerido.
+> - La universidad de origen no cumple con los criterios de prestigio establecidos en nuestro baremo.
+>
+> Si consideras que tu perfil ha sido evaluado incorrectamente, te invitamos a responder a este correo aportando los argumentos necesarios para su revisión. Asimismo, si te interesa seguir formándote en nuestro departamento, te sugiero explorar el Máster en Ciencia de Datos (MUCD) o nuestros títulos profesionales en áreas de IA y Machine Learning.
+>
+> Atentamente,
+>
+> Damiano Zanardini
+>
+> Director del Máster Universitario en Inteligencia Artificial
+>
+> Universidad Politécnica de Madrid
+
+### Degree certificate request
+
+**Incoming email**
+
+> Hola Damiano,
+>
+> ¿Me podrías decir cómo se solicita el título, tras haber defendido exitosamente el máster hace unos días?
+>
+> Gracias y buen verano,
+>
+> Verónica Real Malcruz
+
+**Generated response**
+
+> Hola Verónica,
+>
+> Enhorabuena por la defensa de tu TFM.
+>
+> Para solicitar el título, primero debes esperar a que el acta de la defensa sea recibida y procesada por la Secretaría de Alumnos para que tu expediente se cierre formalmente. Una vez hecho esto, puedes realizar la solicitud completando el formulario que encontrarás en el siguiente enlace: https://muia.dia.fi.upm.es/es/estructura/#solicitud_del_titulo
+>
+> Ten en cuenta que todo el proceso administrativo es gestionado directamente por la Secretaría (secretaria@fi.upm.es).
+>
+> Un saludo,
+>
+> Damiano Zanardini
 
 ## Fine-tuning
 
@@ -130,7 +218,7 @@ m^{\mathrm{sim\_group}}_{i,p}=
 \begin{cases}
 0 & \begin{aligned}
     &\text{if } \exists k\in\{1,\dots,|\mathcal{B}_Q|\}:\\
-    &\left(g(q_k)=g(q_i) \text{ or } \mathrm{score}_{\mathrm{cross\text{-}encoder}}(q_i,q_k)\geq 0\right)\\
+    &\left(g(q_k)=g(q_i) \text{ or } \mathrm{score}_{\mathrm{cross\text{-}encoder}}(q_i^r,q_k^r)\geq 0\right)\\
     &\text{and } \mathrm{tok}(p)=\mathrm{tok}(p_k^{+}),
 \end{aligned}\\
 1 & \text{otherwise.}
