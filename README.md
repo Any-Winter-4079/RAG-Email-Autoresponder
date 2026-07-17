@@ -1,6 +1,6 @@
 # RAG-based Email Autoresponder
 
-This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](M_Sc_AI_Defense.pdf). The [full thesis](M_Sc_AI_Thesis.pdf) is also made available (to be replaced with UPM's OA link once published).
+This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, a response example, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](M_Sc_AI_Defense.pdf). The [full thesis](M_Sc_AI_Thesis.pdf) is also made available (to be replaced with UPM's OA link once published).
 
 Note: GitHub does not render the slides/thesis very well; you can preview them here, but it's better to download them if you want an accurate version.
 
@@ -8,91 +8,106 @@ Note: GitHub does not render the slides/thesis very well; you can preview them h
 
 <img width="5097" height="4729" alt="muia_prod_pipeline" src="https://github.com/user-attachments/assets/e01e88dc-2b1e-4f5a-afdd-2b82038f7f48" />
 
-## Anonymized examples
+## Anonymized example
 
-### Schedule query
-
-**Incoming email**
-
-> Hola,
->
-> ¿Cuándo se imparte Redes Bayesianas? No encuentro el horario en Moodle.
->
-> Gracias.
-
-**Generated response**
-
-> Hola,
->
-> El horario para la asignatura de Redes Bayesianas (A4) en el curso 2025-26 es el siguiente:
->
-> - Martes: 09:00 – 10:00
-> - Miércoles: 09:00 – 10:00
-> - Jueves: 17:00 – 19:00
->
-> Ten en cuenta que esta asignatura se imparte de forma concentrada durante las primeras ocho semanas del semestre.
->
-> Saludos,
->
-> Damiano Zanardini
-
-### Admission rejection
+### Conditional admission follow-up
 
 **Incoming email**
 
-> Buenas tardes,
+> I was just conditionally admitted to MUIA. Any update? I am worried about the date of my Bachelor degree being too late for MUIA and losing my spot. Can you please help me?
 >
-> Me gustaría saber cuáles son las razones por las que se ha denegado el acceso a este máster.
+> On Thu, Jul 2, 2026 at 12:28 AM Ralph <[redacted email]> wrote:
 >
-> Cordialmente
+> Dear Damiano,
 >
-> Dario
+> If I apply through Helios and am admitted to MUIA, but I do not complete my bachelor's degree until September, would I still be able to start the programme in September?
+>
+> Thank you for your help.
+>
+> Best regards,
+>
+> Ralph
+
+<details>
+<summary><strong>Internal reasoning trace</strong></summary>
+
+```text
+Damiano Zanardini, Director of the Master in Artificial Intelligence (MUIA) at UPM.
+Ralph ([redacted email]).
+The student (Ralph) has been conditionally admitted to MUIA. He is worried that if he completes his Bachelor's degree in September, it might be too late and he might lose his spot.
+
+* Chunk 1: "Admitted with conditional enrollment" is normal for students finishing their degree. It is permitted to enroll even if the TFM and up to 9 ECTS are pending, provided the student finishes the degree before completing the Master's.
+* Chunk 2: Conditional enrollment means the student accepts the condition that they must finish undergraduate studies before any postgraduate grades can be uploaded (specifically before the first useful call, e.g., January). If not completed, they lose enrollment/money.
+* Chunk 3: Students who haven't completed their degree can reserve a spot conditionally. They must meet specific criteria by September 30 (e.g., official academic record/proof of credits).
+* Chunk 4: Deadline for submitting additional documentation is 30 September 2026. Students who haven't completed their degree can enroll with conditional admission, provided they submit required documentation by 30 September 2026.
+* Chunk 5: Mentions deadlines (some from 2023, so treat with caution as per instructions, but Chunk 4 specifically mentions 2026 for documentation).
+
+* Ralph is admitted conditionally.
+* He finishes his degree in September.
+* The deadline for documentation is September 30.
+* He can enroll conditionally as long as he finishes the degree before he finishes the Master's.
+* He shouldn't lose his spot as long as he submits the necessary documents by the deadline (Sept 30).
+
+* Reassure him that conditional admission is normal.
+* Explain that completing the degree in September is acceptable.
+* Emphasize the requirement to finish the Bachelor's before the Master's is completed.
+* Remind him of the documentation deadline (September 30).
+
+* Tone: Professional, concise, reassuring.
+* Language: English (matches the original email).
+
+* Draft:
+    Dear Ralph,
+
+    Please do not worry. Being admitted "with conditional enrollment" is a normal procedure for students who are still finishing their undergraduate studies.
+
+    As long as you complete your Bachelor's degree and submit the required documentation by the September 30 deadline, you will be able to start the program. The main requirement is that you must finish your Bachelor's degree before you complete the Master's degree.
+
+    Best regards,
+    Damiano Zanardini
+
+* Check against constraints: No subject line, no signature/greetings outside tags. Use <message> tags.
+* Check language: English.
+* Check content accuracy: Chunk 1 and 4 support that conditional admission is fine and that documentation is due by Sept 30.
+
+Self-Correction during drafting: The user specifically asks if completing in September is "too late". I should clarify that as long as the degree is completed and documentation is submitted by the September 30 deadline, it is fine.
+
+Refined Draft:
+
+Dear Ralph,
+
+Please do not worry. Being admitted with conditional enrollment is a normal procedure for students who are still in the process of finishing their degree.
+
+As long as you complete your Bachelor's degree and submit the necessary documentation by the September 30 deadline, you will not lose your spot. The key requirement is that you must finish your undergraduate studies before you complete the Master's degree.
+
+Best regards,
+Damiano Zanardini
+
+Wait, let's check Chunk 1 again regarding the "9 ECTS" and "TFM". It says it's permitted to enroll even with those pending. The core message is: finishing in September is fine, just hit the Sept 30 documentation deadline.
+
+Final Polish:
+
+Dear Ralph,
+
+Please do not worry. Being admitted with conditional enrollment is a standard procedure for students who are still finishing their undergraduate degree.
+
+As long as you complete your Bachelor's degree and submit the required documentation by the September 30 deadline, you will be able to start the program. The primary requirement is simply that you must complete your Bachelor's degree before you finish your Master's degree.
+
+Best regards,
+Damiano Zanardini
+```
+
+</details>
 
 **Generated response**
 
-> Estimado Dario,
+> Dear Ralph,
 >
-> Lamento informarte que el Máster Universitario en Inteligencia Artificial es un programa de alta demanda, con un número de solicitantes muy superior al de plazas disponibles.
+> Please do not worry. Being admitted with conditional enrollment is a standard procedure for students who are still in the process of finishing their undergraduate studies.
 >
-> Las decisiones de admisión son tomadas por la Comisión Académica del Máster (CAMIA) siguiendo un baremo que prioriza perfiles con una formación sólida en informática y excelentes resultados académicos. Los motivos más frecuentes de denegación suelen ser:
+> As long as you complete your Bachelor's degree and submit the required documentation by the September 30 deadline, you will be able to start the program. The essential requirement is that you must finish your Bachelor's degree before you complete your Master's degree.
 >
-> - El grado de origen no está alineado con la Ingeniería Informática (requisito estricto para mantener sellos de calidad como Euro-Inf).
-> - La nota media académica no alcanza el nivel requerido.
-> - La universidad de origen no cumple con los criterios de prestigio establecidos en nuestro baremo.
->
-> Si consideras que tu perfil ha sido evaluado incorrectamente, te invitamos a responder a este correo aportando los argumentos necesarios para su revisión. Asimismo, si te interesa seguir formándote en nuestro departamento, te sugiero explorar el Máster en Ciencia de Datos (MUCD) o nuestros títulos profesionales en áreas de IA y Machine Learning.
->
-> Atentamente,
->
-> Damiano Zanardini
->
-> Director del Máster Universitario en Inteligencia Artificial
->
-> Universidad Politécnica de Madrid
-
-### Degree certificate request
-
-**Incoming email**
-
-> Hola Damiano,
->
-> ¿Me podrías decir cómo se solicita el título, tras haber defendido exitosamente el máster hace unos días?
->
-> Gracias y buen verano,
->
-> Verónica Real Malcruz
-
-**Generated response**
-
-> Hola Verónica,
->
-> Enhorabuena por la defensa de tu TFM.
->
-> Para solicitar el título, primero debes esperar a que el acta de la defensa sea recibida y procesada por la Secretaría de Alumnos para que tu expediente se cierre formalmente. Una vez hecho esto, puedes realizar la solicitud completando el formulario que encontrarás en el siguiente enlace: https://muia.dia.fi.upm.es/es/estructura/#solicitud_del_titulo
->
-> Ten en cuenta que todo el proceso administrativo es gestionado directamente por la Secretaría (secretaria@fi.upm.es).
->
-> Un saludo,
+> Best regards,
 >
 > Damiano Zanardini
 
