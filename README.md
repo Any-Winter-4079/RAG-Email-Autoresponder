@@ -2,6 +2,10 @@
 
 This repository contains a RAG-based email autoresponder for the MUIA master's program. The system is organized around Modal applications that crawl and encode knowledge-base collections, retrieve and rerank context for incoming email threads, run local decoder/encoder models, manage Qdrant collections, and support evaluation.
 
+## Overview
+
+<img width="5097" height="4729" alt="muia_prod_pipeline" src="https://github.com/user-attachments/assets/e01e88dc-2b1e-4f5a-afdd-2b82038f7f48" />
+
 ## Modal Applications
 
 The tables below summarize the remote Modal applications and functions used by the system.
