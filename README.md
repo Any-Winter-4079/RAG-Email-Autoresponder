@@ -56,7 +56,7 @@ where the collision mask $m^{\mathrm{pos}}_{i,p}$ zeroes out any additional IBN 
 ```math
 m^{\mathrm{pos}}_{i,p}=
 \begin{cases}
-0 & \text{if } \operatorname{tok}(p)=\operatorname{tok}(p_i^{+}),\\
+0 & \text{if } \mathrm{tok}(p)=\mathrm{tok}(p_i^{+}),\\
 1 & \text{otherwise.}
 \end{cases}
 ```
@@ -92,7 +92,7 @@ where the mask $m^{\mathrm{group}}_{i,p}$ zeroes out a passage whose tokens matc
 ```math
 m^{\mathrm{group}}_{i,p}=
 \begin{cases}
-0 & \text{if } \exists k\in\{1,\dots,|\mathcal{B}_Q|\}: g(q_k)=g(q_i) \text{ and } \operatorname{tok}(p)=\operatorname{tok}(p_k^{+}),\\
+0 & \text{if } \exists k\in\{1,\dots,|\mathcal{B}_Q|\}: g(q_k)=g(q_i) \text{ and } \mathrm{tok}(p)=\mathrm{tok}(p_k^{+}),\\
 1 & \text{otherwise.}
 \end{cases}
 ```
@@ -130,8 +130,8 @@ m^{\mathrm{sim\_group}}_{i,p}=
 \begin{cases}
 0 & \begin{aligned}
     &\text{if } \exists k\in\{1,\dots,|\mathcal{B}_Q|\}:\\
-    &\left(g(q_k)=g(q_i) \text{ or } \operatorname{score}_{\mathrm{cross\text{-}encoder}}(q_i,q_k)\geq 0\right)\\
-    &\text{and } \operatorname{tok}(p)=\operatorname{tok}(p_k^{+}),
+    &\left(g(q_k)=g(q_i) \text{ or } \mathrm{score}_{\mathrm{cross\text{-}encoder}}(q_i,q_k)\geq 0\right)\\
+    &\text{and } \mathrm{tok}(p)=\mathrm{tok}(p_k^{+}),
 \end{aligned}\\
 1 & \text{otherwise.}
 \end{cases}
