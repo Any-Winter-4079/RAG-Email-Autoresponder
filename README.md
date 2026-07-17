@@ -4,11 +4,13 @@ This repo contains a RAG-based email autoresponder system for the [European Mast
 
 Note: GitHub does not render the slides/thesis very well; you can preview them here, but it's better to download them if you want an accurate version.
 
+Note#2: This repo is archived. No further updates are expected.
+
 ## Overview
 
 <img width="5097" height="4729" alt="muia_prod_pipeline" src="https://github.com/user-attachments/assets/e01e88dc-2b1e-4f5a-afdd-2b82038f7f48" />
 
-## Anonymized example
+## Anonymized examples (English/Spanish)
 
 ### Conditional admission follow-up
 
@@ -108,6 +110,32 @@ Damiano Zanardini
 > As long as you complete your Bachelor's degree and submit the required documentation by the September 30 deadline, you will be able to start the program. The essential requirement is that you must finish your Bachelor's degree before you complete your Master's degree.
 >
 > Best regards,
+>
+> Damiano Zanardini
+
+### Schedule query
+
+**Incoming email**
+
+> Hola,
+>
+> ¿Cuándo se imparte Redes Bayesianas? No encuentro el horario en Moodle.
+>
+> Gracias.
+
+**Generated response**
+
+> Hola,
+>
+> El horario para la asignatura de Redes Bayesianas (A4) en el curso 2025-26 es el siguiente:
+>
+> - Martes: 09:00 – 10:00
+> - Miércoles: 09:00 – 10:00
+> - Jueves: 17:00 – 19:00
+>
+> Ten en cuenta que esta asignatura se imparte de forma concentrada durante las primeras ocho semanas del semestre.
+>
+> Saludos,
 >
 > Damiano Zanardini
 
