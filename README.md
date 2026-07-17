@@ -1,6 +1,8 @@
 # RAG-based Email Autoresponder
 
-This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](M_Sc_AI_Defense.pdf) (note: GitHub does not render the slides very well; you can preview them here, but it's better to download them). The [full thesis](M_Sc_AI_Thesis.pdf) is also made available (to be replaced with UPM's OA link once published).
+This repo contains a RAG-based email autoresponder system for the [European Masters in AI](https://muia.dia.fi.upm.es/en/) at UPM. A system overview, response examples, modifications to M3's InfoNCE-IBN loss, and a breakdown of the Modal applications for its running are shown below. A summary of the project from problem statement to system results is available in the [MSc AI defense slides](M_Sc_AI_Defense.pdf). The [full thesis](M_Sc_AI_Thesis.pdf) is also made available (to be replaced with UPM's OA link once published).
+
+Note: GitHub does not render the slides/thesis very well; you can preview them here, but it's better to download them if you want an accurate version.
 
 ## Overview
 
